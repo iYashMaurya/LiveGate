@@ -1,29 +1,48 @@
 spec_version: "0.1.0"
-name: my-agent
+name: livegate
 version: 0.1.0
-description: A production-ready agent with full compliance configuration
-author: ""
-license: proprietary
+description: "Real-environment CI/CD testing agent that mines production logs to generate live probes against staging — not mocks, not scripts, real signals."
+author: "LiveGate"
+license: MIT
+
 model:
-  preferred: claude-opus-4-6
+  preferred: claude-sonnet-4-6
   fallback:
-    - claude-sonnet-4-5-20250929
+    - claude-haiku-4-5-20251001
   constraints:
-    temperature: 0.1
-    max_tokens: 8192
-skills: []
-tools: []
+    temperature: 0.2
+    max_tokens: 4096
+
+skills:
+  - diff-reader
+  - log-miner
+  - probe-generator
+  - env-prober
+  - behavior-comparator
+  - verdict-writer
+
+tools:
+  - github-comment
+  - http-probe
+  - log-fetch
+
+agents:
+  probe-executor:
+    description: "Executes HTTP probes against real staging environment"
+  verdict-auditor:
+    description: "Reviews verdicts for correctness before posting"
+
 delegation:
-  mode: auto
+  mode: explicit
+
 runtime:
-  max_turns: 50
+  max_turns: 30
   timeout: 300
+
 compliance:
   risk_tier: standard
   frameworks: []
   supervision:
-    designated_supervisor: null
-    review_cadence: quarterly
     human_in_the_loop: conditional
     escalation_triggers:
       - confidence_below: 0.7
@@ -33,40 +52,37 @@ compliance:
   recordkeeping:
     audit_logging: true
     log_format: structured_json
-    retention_period: 6y
+    retention_period: 1y
     log_contents:
       - prompts_and_responses
       - tool_calls
       - decision_pathways
       - model_version
       - timestamps
-    immutable: true
-  model_risk:
-    inventory_id: null
-    validation_cadence: annual
-    validation_type: full
-    conceptual_soundness: null
-    ongoing_monitoring: true
-    outcomes_analysis: true
-    drift_detection: true
-    parallel_testing: false
-  data_governance:
-    pii_handling: redact
-    data_classification: confidential
-    consent_required: true
-    cross_border: false
-    bias_testing: true
-    lda_search: false
-  communications:
-    type: correspondence
-    pre_review_required: false
-    fair_balanced: true
-    no_misleading: true
-    disclosures_required: false
-  vendor_management:
-    due_diligence_complete: false
-    soc_report_required: false
-    vendor_ai_notification: true
-    subcontractor_assessment: false
-tags: []
-metadata: {}
+    immutable: false
+  segregation_of_duties:
+    roles:
+      - id: prober
+        description: "Executes probes against the real environment"
+        permissions: [execute, submit]
+      - id: auditor
+        description: "Reviews probe results and writes the verdict"
+        permissions: [review, approve, reject, report]
+    conflicts:
+      - [prober, auditor]
+    assignments:
+      probe-executor: [prober]
+      verdict-auditor: [auditor]
+    handoffs:
+      - action: deployment_verdict
+        required_roles: [prober, auditor]
+        approval_required: true
+    enforcement: strict
+
+tags:
+  - ci-cd
+  - real-environment-testing
+  - log-mining
+  - deployment-intelligence
+  - gitagent
+  - hackathon

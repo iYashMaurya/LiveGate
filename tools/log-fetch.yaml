@@ -1,0 +1,32 @@
+name: log-fetch
+description: Fetches access logs from a configured log source (file, S3, or HTTP endpoint)
+version: "1.0.0"
+input_schema:
+  type: object
+  properties:
+    source:
+      type: string
+      description: "Log source type: file, s3, or http"
+    path:
+      type: string
+      description: "File path, S3 URI, or HTTP URL of the log source"
+    lines:
+      type: integer
+      description: "Number of most recent lines to fetch"
+    filter:
+      type: string
+      description: "Grep-style filter pattern to apply"
+  required:
+    - source
+    - path
+implementation:
+  type: script
+  path: scripts/log-fetch.sh
+  runtime: bash
+  timeout: 30
+annotations:
+  requires_confirmation: false
+  read_only: true
+  cost: none
+  compliance_sensitive: false
+  idempotent: true

@@ -1,0 +1,30 @@
+name: github-comment
+description: Posts or updates a comment on a GitHub pull request with the deployment verdict
+version: "1.0.0"
+input_schema:
+  type: object
+  properties:
+    repo:
+      type: string
+      description: "GitHub repository in owner/repo format"
+    pr_number:
+      type: integer
+      description: "Pull request number to comment on"
+    body:
+      type: string
+      description: "Markdown body of the comment"
+  required:
+    - repo
+    - pr_number
+    - body
+implementation:
+  type: script
+  path: scripts/github-comment.sh
+  runtime: bash
+  timeout: 30
+annotations:
+  requires_confirmation: false
+  read_only: false
+  cost: none
+  compliance_sensitive: false
+  idempotent: true

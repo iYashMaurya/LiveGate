@@ -1,0 +1,35 @@
+name: http-probe
+description: Sends an HTTP request to a staging endpoint and returns the full response
+version: "1.0.0"
+input_schema:
+  type: object
+  properties:
+    url:
+      type: string
+      description: "Full URL to probe"
+    method:
+      type: string
+      description: "HTTP method (GET, POST, PUT, DELETE, PATCH)"
+    headers:
+      type: object
+      description: "Request headers as key-value pairs"
+    body:
+      type: string
+      description: "Request body (JSON string)"
+    timeout:
+      type: integer
+      description: "Request timeout in milliseconds"
+  required:
+    - url
+    - method
+implementation:
+  type: script
+  path: scripts/http-probe.js
+  runtime: node
+  timeout: 60
+annotations:
+  requires_confirmation: false
+  read_only: true
+  cost: low
+  compliance_sensitive: false
+  idempotent: true
