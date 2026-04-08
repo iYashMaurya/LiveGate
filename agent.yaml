@@ -1,0 +1,72 @@
+spec_version: "0.1.0"
+name: my-agent
+version: 0.1.0
+description: A production-ready agent with full compliance configuration
+author: ""
+license: proprietary
+model:
+  preferred: claude-opus-4-6
+  fallback:
+    - claude-sonnet-4-5-20250929
+  constraints:
+    temperature: 0.1
+    max_tokens: 8192
+skills: []
+tools: []
+delegation:
+  mode: auto
+runtime:
+  max_turns: 50
+  timeout: 300
+compliance:
+  risk_tier: standard
+  frameworks: []
+  supervision:
+    designated_supervisor: null
+    review_cadence: quarterly
+    human_in_the_loop: conditional
+    escalation_triggers:
+      - confidence_below: 0.7
+      - error_detected: true
+    override_capability: true
+    kill_switch: true
+  recordkeeping:
+    audit_logging: true
+    log_format: structured_json
+    retention_period: 6y
+    log_contents:
+      - prompts_and_responses
+      - tool_calls
+      - decision_pathways
+      - model_version
+      - timestamps
+    immutable: true
+  model_risk:
+    inventory_id: null
+    validation_cadence: annual
+    validation_type: full
+    conceptual_soundness: null
+    ongoing_monitoring: true
+    outcomes_analysis: true
+    drift_detection: true
+    parallel_testing: false
+  data_governance:
+    pii_handling: redact
+    data_classification: confidential
+    consent_required: true
+    cross_border: false
+    bias_testing: true
+    lda_search: false
+  communications:
+    type: correspondence
+    pre_review_required: false
+    fair_balanced: true
+    no_misleading: true
+    disclosures_required: false
+  vendor_management:
+    due_diligence_complete: false
+    soc_report_required: false
+    vendor_ai_notification: true
+    subcontractor_assessment: false
+tags: []
+metadata: {}

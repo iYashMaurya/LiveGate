@@ -1,0 +1,13 @@
+hooks:
+  on_session_start:
+    - script: scripts/on-start.sh
+      description: Initialize session context
+      timeout: 10
+      compliance: false
+      fail_open: true
+  on_error:
+    - script: scripts/on-error.sh
+      description: Handle errors and escalate if needed
+      timeout: 10
+      compliance: false
+      fail_open: true
