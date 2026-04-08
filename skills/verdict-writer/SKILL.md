@@ -29,3 +29,28 @@ Given memory/runtime/anomaly-report.json:
 5. If ESCALATE or NO-GO: also write to memory/runtime/escalation.md with full detail
 
 ## PR Comment Format (≤2000 chars summary)
+
+```markdown
+## LiveGate Deployment Report ✓/✗/⚠
+
+**Verdict: [GO ✓ | NO-GO ✗ | ESCALATE ⚠]**
+**Confidence:** [0.0–1.0] | **Probes fired:** N | **Anomalies:** N
+
+### What was tested
+Probes derived from [N] real traffic patterns from the last 24h of logs.
+Affected routes: METHOD /path, METHOD /path
+
+### Findings
+
+| Severity | Count | Top finding |
+|----------|-------|-------------|
+| CRITICAL | N     | ...         |
+| HIGH     | N     | ...         |
+| MEDIUM   | N     | ...         |
+
+### Recommendation
+[1–3 sentences. Evidence-based. Cite specific probe IDs and deltas.]
+
+---
+*LiveGate v0.1.0 | Real-environment testing | [N] log patterns analyzed*
+```
