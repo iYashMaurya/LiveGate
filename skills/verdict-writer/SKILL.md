@@ -1,22 +1,31 @@
 ---
 name: verdict-writer
-description: Produces a human-readable deployment verdict with evidence from real probes
-license: MIT
-allowed-tools: "github-comment"
+description: "Reads the anomaly report produced by behavior-comparator and writes a structured Go/No-Go deployment verdict. This skill is owned by the verdict-auditor sub-agent (role: auditor). It posts the verdict as a GitHub PR comment in human-readable markdown, or opens a human-review branch when confidence is below threshold."
+allowed-tools: Bash Read Write
 metadata:
-  author: "LiveGate"
+  category: output
   version: "1.0.0"
-  category: reporting
+  author: livegate
+  role: auditor
 ---
 
 # Verdict Writer
 
-## Instructions
-Given behavior comparison results, produce a deployment verdict:
-- Overall verdict: SAFE / RISKY / BLOCKED
-- Summary of findings
-- Per-probe evidence table (endpoint, expected, actual, status)
-- Confidence score
-- Recommended action
+## Purpose
+Transform the anomaly report into a human-readable deployment verdict.
+This skill is owned by verdict-auditor (role: auditor). It never fires probes.
 
-Format as a GitHub PR comment with markdown tables.
+## Instructions
+
+Given memory/runtime/anomaly-report.json:
+
+1. Read the anomaly report
+2. Determine verdict:
+   - GO ✓: confidence >= 0.7 AND no CRITICAL anomalies AND no HIGH anomalies
+   - ESCALATE ⚠: confidence >= 0.5 AND (HIGH anomalies exist OR new endpoints with no baseline)
+   - NO-GO ✗: confidence < 0.5 OR any CRITICAL anomalies
+3. Write verdict to memory/runtime/verdict.json
+4. Compose GitHub PR comment in markdown (see format below)
+5. If ESCALATE or NO-GO: also write to memory/runtime/escalation.md with full detail
+
+## PR Comment Format (≤2000 chars summary)
