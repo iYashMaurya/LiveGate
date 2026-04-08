@@ -1,28 +1,36 @@
-# Duties
+# Duties — Segregation of Duties Policy
 
-System-wide segregation of duties policy.
+## System-Wide Policy
 
-## Roles
+LiveGate enforces a strict two-role separation between the agent that executes
+probes and the agent that writes the deployment verdict. No single agent may hold
+both roles simultaneously.
+
+## Role Definitions
 
 | Role | Agent | Permissions | Description |
 |------|-------|-------------|-------------|
-| (define roles) | (assign agents) | (list permissions) | (describe duty) |
+| prober | probe-executor | execute, probe | Fires HTTP probes against real staging env |
+| auditor | verdict-auditor | review, approve, reject, report | Reviews probe results, writes Go/No-Go |
 
 ## Conflict Matrix
 
-No single agent may hold both roles in any pair:
+| Role A | Role B | Conflict |
+|--------|--------|----------|
+| prober | auditor | CONFLICT — same agent cannot probe AND audit |
 
-- (define role conflicts)
+## Handoff Workflow: deployment_verdict
 
-## Handoff Workflows
-
-(Define critical actions that require multi-role handoff)
+1. `probe-executor` fires all probes and records raw results to memory/runtime/
+2. `probe-executor` signals completion — it does NOT interpret results
+3. `verdict-auditor` reads raw results from memory/runtime/
+4. `verdict-auditor` writes verdict to PR comment or escalation report
+5. If verdict-auditor confidence < 0.7 → opens human-review PR branch
 
 ## Isolation Policy
+- Each sub-agent reads from its own section of memory/runtime/
+- Credentials for staging environment are only available to probe-executor
+- Verdict-auditor has read-only access to probe results
 
-- **State isolation:** (full | shared | none)
-- **Credential segregation:** (separate | shared)
-
-## Enforcement
-
-(strict | advisory)
+## Enforcement: strict
+Violations of this SOD policy cause the pipeline to halt and alert.
