@@ -1,35 +1,43 @@
 name: http-probe
-description: Sends an HTTP request to a staging endpoint and returns the full response
-version: "1.0.0"
+description: "Fire a single HTTP probe against the staging environment and return the full response signature. Used by env-prober skill."
+version: 1.0.0
 input_schema:
   type: object
   properties:
-    url:
+    base_url:
       type: string
-      description: "Full URL to probe"
+      description: "Staging base URL"
     method:
       type: string
-      description: "HTTP method (GET, POST, PUT, DELETE, PATCH)"
+      enum: ["GET", "POST", "PUT", "PATCH", "DELETE"]
+    path:
+      type: string
+    query_params:
+      type: object
     headers:
       type: object
-      description: "Request headers as key-value pairs"
     body:
-      type: string
-      description: "Request body (JSON string)"
-    timeout:
+      type: object
+    timeout_ms:
       type: integer
-      description: "Request timeout in milliseconds"
-  required:
-    - url
-    - method
-implementation:
-  type: script
-  path: scripts/http-probe.js
-  runtime: node
-  timeout: 60
+      default: 10000
+  required: [base_url, method, path]
+output_schema:
+  type: object
+  properties:
+    status_code:
+      type: integer
+    latency_ms:
+      type: number
+    response_body_hash:
+      type: string
+    content_type:
+      type: string
+    response_size_bytes:
+      type: integer
+    error:
+      type: string
 annotations:
   requires_confirmation: false
   read_only: true
   cost: low
-  compliance_sensitive: false
-  idempotent: true
