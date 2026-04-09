@@ -142,6 +142,46 @@ echo ""
 echo "Run 2 verdict: $(echo "$VERDICT_2" | node -e "process.stdin.on('data',d=>console.log(JSON.parse(d).verdict))")"
 echo ""
 
+# Save Run 2 as baseline for Run 3
+node -e "
+  import { readFileSync, writeFileSync } from 'fs';
+  const results = JSON.parse(readFileSync('memory/runtime/probe-results.json','utf-8'));
+  const baseline = {};
+  for (const r of results.results) { baseline[r.probe_id] = r; }
+  writeFileSync('memory/runtime/baseline.json', JSON.stringify(baseline, null, 2));
+"
+
+kill "$DEMO_PID" 2>/dev/null || true
+wait "$DEMO_PID" 2>/dev/null || true
+sleep 1
+
+# ─── Run 3: Priority filter bug ──────────────────────────────
+
+echo "═══════════════════════════════════════"
+echo "  Run 3: Priority filter bug (BUG_MODE=true)"
+echo "  → Body changes: priority filter returns wrong orders"
+echo "  → Lyzr will explain what changed semantically"
+echo "═══════════════════════════════════════"
+echo ""
+
+echo "▶ Starting demo app with BUG_MODE=true..."
+cd "$SCRIPT_DIR/sample-app"
+PORT=3001 BUG_MODE=true node server.js &
+DEMO_PID=$!
+cd "$ROOT_DIR"
+sleep 2
+
+node runtime/index.js \
+  --diff demo/sample-diff/change.diff \
+  --log-source file \
+  --log-path demo/sample-logs/access.log \
+  --staging http://localhost:3001 || true
+
+VERDICT_3=$(cat memory/runtime/verdict.json 2>/dev/null || echo '{"verdict":"ERROR"}')
+echo ""
+echo "Run 3 verdict: $(echo "$VERDICT_3" | node -e "process.stdin.on('data',d=>console.log(JSON.parse(d).verdict))")"
+echo ""
+
 # ─── Summary ──────────────────────────────────────────────────
 
 echo "╔══════════════════════════════════════╗"
@@ -149,6 +189,10 @@ echo "║           Demo Summary               ║"
 echo "╠══════════════════════════════════════╣"
 printf "║  Run 1 (normal):     %-15s ║\n" "$(echo "$VERDICT_1" | node -e "process.stdin.on('data',d=>console.log(JSON.parse(d).verdict))")"
 printf "║  Run 2 (slow):       %-15s ║\n" "$(echo "$VERDICT_2" | node -e "process.stdin.on('data',d=>console.log(JSON.parse(d).verdict))")"
+printf "║  Run 3 (bug):        %-15s ║\n" "$(echo "$VERDICT_3" | node -e "process.stdin.on('data',d=>console.log(JSON.parse(d).verdict))")"
+echo "╠══════════════════════════════════════╣"
+echo "║  Lyzr Studio: https://studio.lyzr.ai║"
+echo "║  (check your dashboard for traces)   ║"
 echo "╚══════════════════════════════════════╝"
 echo ""
 echo "See memory/runtime/ for full reports."

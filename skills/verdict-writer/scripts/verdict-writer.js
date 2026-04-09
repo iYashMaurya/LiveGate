@@ -27,35 +27,38 @@ function verdictEmoji(verdict) {
 }
 
 async function composePRCommentWithLyzr(report, verdict, changeManifest) {
-  try {
-    const lyzrResult = await lyzrChat({
-      message: `Write a GitHub PR comment for a deployment gate verdict. Be direct, specific, and actionable. Use markdown.
+  const anomaliesWithExplanations = report.anomalies
+    .filter(a => a.ai_explanation)
+    .map(a => `- [${a.severity}] ${a.probe_id}: ${a.ai_explanation}`)
+    .join('\n');
+
+  const result = await lyzrChat({
+    message: `Write a GitHub PR comment for this deployment gate result.
+Use markdown. Be direct and specific. No template language.
 
 VERDICT: ${verdict}
-CONFIDENCE: ${report.confidence_score}
+CONFIDENCE: ${(report.confidence_score * 100).toFixed(0)}%
 PROBES FIRED: ${report.probes_compared}
-CHANGE SUMMARY: ${changeManifest?.change_description || 'Not available'}
 
-ANOMALIES:
-${JSON.stringify(report.anomalies.slice(0, 10), null, 2)}
+WHAT CHANGED:
+${changeManifest?.change_description || 'Not available'}
+
+ANOMALY EXPLANATIONS (from AI analysis):
+${anomaliesWithExplanations || 'None — all probes behaved as expected'}
+
+ANOMALY COUNTS: critical=${report.summary.critical} high=${report.summary.high} medium=${report.summary.medium} low=${report.summary.low}
 
 Rules:
-- Start with a clear header: ✅ GO, ❌ NO-GO, or ⚠️ ESCALATE
-- For each anomaly with semantic_change, explain it in plain English (not JSON)
-- For NO-GO: give the specific action the developer should take
-- For ESCALATE: explain exactly what a human reviewer should check
-- For GO: briefly confirm what was tested and that it passed
-- End with: probes fired count, powered by Lyzr Studio
-- Keep under 400 words total
-- Do NOT wrap in markdown code blocks — return raw markdown only`,
-      userId: 'livegate_verdict_auditor',
-    });
+- Start with verdict emoji + one-line verdict in bold
+- If NO-GO or ESCALATE: name the specific probe and explain the problem in 1-2 sentences
+- If GO: confirm what was tested and that behavior matches baseline
+- Give the developer ONE specific action to take
+- Last line: "Powered by Lyzr Studio | ${report.probes_compared} probes | gitagent v0.1.0"
+- Max 300 words
+- Raw markdown only, no code blocks`,
+  });
 
-    return lyzrResult?.text || null;
-  } catch (err) {
-    process.stderr.write(`[lyzr] PR comment generation failed: ${err.message}, using fallback\n`);
-    return null;
-  }
+  return result?.text || null;
 }
 
 function composePRCommentFallback(report, verdict) {

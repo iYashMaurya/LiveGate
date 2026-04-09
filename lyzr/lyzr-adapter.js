@@ -12,8 +12,8 @@
  *   LYZR_API_KEY  — from studio.lyzr.ai → Account & API Key
  *   LYZR_AGENT_ID — from studio.lyzr.ai after creating the LiveGate agent
  * 
- * Optional fallback:
- *   If LYZR_API_KEY is not set, returns null (callers must handle this gracefully).
+ * Throws if LYZR_API_KEY or LYZR_AGENT_ID are not set.
+ * Callers must check isLyzrConfigured() before calling, or catch the error.
  */
 
 import { randomUUID } from 'crypto';
@@ -28,17 +28,22 @@ const LYZR_CHAT_ENDPOINT = `${LYZR_BASE_URL}/v3/inference/chat/`;
  * @param {string} options.message - The full prompt to send
  * @param {string} [options.sessionId] - Optional session ID for context continuity
  * @param {string} [options.userId] - Optional user ID (defaults to 'livegate_pipeline')
- * @returns {Promise<{text: string, sessionId: string} | null>}
+ * @returns {Promise<{text: string, sessionId: string}>}
  */
 export async function lyzrChat({ message, sessionId, userId = 'livegate_pipeline' }) {
   const apiKey = process.env.LYZR_API_KEY;
   const agentId = process.env.LYZR_AGENT_ID;
 
   if (!apiKey || !agentId) {
-    return null; // Callers fall back to deterministic behavior
+    throw new Error(
+      'Lyzr not configured. Set LYZR_API_KEY and LYZR_AGENT_ID in .env. See lyzr/README.md.'
+    );
   }
 
-  const sid = sessionId || process.env.LYZR_SESSION_ID || randomUUID();
+  const sid = sessionId
+    || process.env.LYZR_PIPELINE_SESSION_ID
+    || process.env.LYZR_SESSION_ID
+    || randomUUID();
 
   const response = await fetch(LYZR_CHAT_ENDPOINT, {
     method: 'POST',

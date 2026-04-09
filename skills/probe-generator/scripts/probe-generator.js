@@ -65,23 +65,32 @@ function buildProbeFromPattern(p, probeCounter, totalPatterns, riskLevel) {
   };
 }
 
-async function generateEdgeCasesWithLyzr(changeManifest, existingProbes) {
-  try {
-    const result = await lyzrChat({
-      message: `You are generating HTTP test probes for a deployment gate.
+async function finalizeProbesWithLyzr(changeManifest, baseProbes, logPatterns) {
+  const result = await lyzrChat({
+    message: `You are designing the final HTTP probe set for a deployment gate.
 
-The deployment changed these routes:
-${JSON.stringify(changeManifest.affected_routes || changeManifest.probe_targets, null, 2)}
+The deployment changed:
+${changeManifest.change_description}
 
-Change summary: ${changeManifest.change_description || 'No description available'}
+Affected routes:
+${JSON.stringify(changeManifest.affected_routes, null, 2)}
 
-Already-generated probes cover:
-${existingProbes.slice(0, 5).map(p => `${p.method} ${p.path} params=${JSON.stringify(p.query_params)}`).join('\n')}
+Real traffic patterns from logs (what users actually sent):
+${JSON.stringify((logPatterns.patterns || []).slice(0, 10), null, 2)}
 
-Generate 3-5 additional edge-case probes that specifically target the changed behavior.
-Focus on: boundary values, null/empty inputs, the specific field or param that changed.
+Base probes already generated from log patterns:
+${JSON.stringify(baseProbes.slice(0, 8).map(p => ({
+  method: p.method,
+  path: p.path,
+  params: p.query_params,
+  source: p.source,
+})), null, 2)}
 
-Return ONLY a JSON array:
+Generate 3-5 ADDITIONAL edge case probes that specifically test the change described above.
+These must NOT duplicate existing base probes.
+Focus on: the specific field/param that changed, boundary values, and empty/null inputs.
+
+Return ONLY a JSON array of new probes to add:
 [{
   "method": "GET",
   "path": "/api/orders",
@@ -90,27 +99,27 @@ Return ONLY a JSON array:
   "headers": {"Accept": "application/json"},
   "source": "lyzr_generated",
   "risk_level": "high",
-  "rationale": "Tests empty priority string against new filter logic"
+  "rationale": "Tests empty string priority \u2014 new filter may not sanitize this"
 }]`,
-      userId: 'livegate_probe_generator',
-    });
+  });
 
-    if (!result) return [];
+  if (!result?.text) return baseProbes;
 
-    const edgeProbes = parseLyzrJson(result.text);
-    process.stderr.write(`[lyzr] Generated ${edgeProbes.length} edge-case probes\n`);
-
-    return edgeProbes.map((p, i) => ({
+  try {
+    const edgeCases = parseLyzrJson(result.text);
+    process.stderr.write(`[lyzr] Generated ${edgeCases.length} edge-case probes\n`);
+    const newProbes = edgeCases.map((p, i) => ({
       id: `probe_lyzr_${String(i + 1).padStart(3, '0')}`,
-      priority: 0.88,
+      priority: 0.92,
       expected_status: 200,
       baseline_latency_ms: null,
       frequency_rank: null,
       ...p,
     }));
+    return [...baseProbes, ...newProbes];
   } catch (err) {
-    process.stderr.write(`[lyzr] Edge case generation failed: ${err.message}\n`);
-    return [];
+    process.stderr.write(`[lyzr] Probe finalization parse error: ${err.message}\n`);
+    return baseProbes;
   }
 }
 
@@ -205,22 +214,17 @@ async function main() {
       }
     }
 
-    // Generate Lyzr edge-case probes if configured
-    try {
-      const edgeCases = await generateEdgeCasesWithLyzr(changeManifest, probes);
-      probes.push(...edgeCases);
-    } catch (err) {
-      process.stderr.write(`[lyzr] Edge case generation failed: ${err.message}\n`);
-    }
+    // Lyzr designs the final probe set with targeted edge cases
+    const finalProbes = await finalizeProbesWithLyzr(changeManifest, probes, logPatterns);
 
     // Sort by priority descending
-    probes.sort((a, b) => b.priority - a.priority);
+    finalProbes.sort((a, b) => b.priority - a.priority);
 
     const output = {
       probe_set_id: randomUUID(),
       generated_at: new Date().toISOString(),
-      total_probes: probes.length,
-      probes,
+      total_probes: finalProbes.length,
+      probes: finalProbes,
     };
 
     console.log(JSON.stringify(output, null, 2));

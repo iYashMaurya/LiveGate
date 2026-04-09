@@ -6,6 +6,7 @@ import { dirname, resolve } from 'path';
 import { randomUUID } from 'crypto';
 import chalk from 'chalk';
 import 'dotenv/config';
+import { isLyzrConfigured } from '../lyzr/lyzr-adapter.js';
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -53,12 +54,31 @@ function writeEscalateVerdict(errorMessage) {
 export default async function run({ gitDiffPath, logSource, logPath, stagingUrl, githubRepo, prNumber }) {
   ensureMemoryDir();
 
-  // Single Lyzr session across the entire pipeline — all skills share context
-  const sessionId = randomUUID();
-  const lyzrEnv = { LYZR_SESSION_ID: sessionId };
-  if (process.env.LYZR_API_KEY) {
-    console.log(chalk.cyan(`  Lyzr session: ${sessionId}`));
+  // ── Lyzr required ────────────────────────────────────────────
+  if (!isLyzrConfigured()) {
+    console.error(`
+╔═══════════════════════════════════════════════════════════╗
+║              LiveGate requires Lyzr Studio                ║
+╠═══════════════════════════════════════════════════════════╣
+║  LiveGate's AI analysis runs through Lyzr Studio.         ║
+║  Without it, there is no diff understanding, no smart     ║
+║  probe generation, and no semantic verdict reasoning.     ║
+║                                                           ║
+║  Setup (5 min):                                           ║
+║    1. Go to https://studio.lyzr.ai                        ║
+║    2. Create the LiveGate agent (see lyzr/README.md)      ║
+║    3. Add to .env:                                        ║
+║         LYZR_API_KEY=your_key                             ║
+║         LYZR_AGENT_ID=your_agent_id                       ║
+╚═══════════════════════════════════════════════════════════╝
+`);
+    process.exit(1);
   }
+
+  // ── One session ID for the entire pipeline ───────────────────
+  const PIPELINE_SESSION_ID = randomUUID();
+  const lyzrEnv = { LYZR_PIPELINE_SESSION_ID: PIPELINE_SESSION_ID };
+  console.log(chalk.gray(`  Lyzr session: ${PIPELINE_SESSION_ID}`));
 
   try {
     // Step 1: diff-reader
@@ -160,8 +180,7 @@ export default async function run({ gitDiffPath, logSource, logPath, stagingUrl,
     return verdict;
   } catch (err) {
     console.log(chalk.red(`\n❌ Pipeline error: ${err.message}`));
-    const verdict = writeEscalateVerdict(err.message);
-    return verdict;
+    throw err;
   }
 }
 
@@ -194,6 +213,8 @@ ${chalk.bold('Examples:')}
   node runtime/index.js --diff HEAD~1 --log-path /var/log/access.log --staging http://staging:3000 --repo owner/repo --pr 42
 
 ${chalk.bold('Environment Variables:')}
+  LYZR_API_KEY          Lyzr Studio API key (REQUIRED)
+  LYZR_AGENT_ID         Lyzr Studio agent ID (REQUIRED)
   STAGING_BASE_URL      Fallback staging URL (overridden by --staging)
   GITHUB_TOKEN          GitHub API token for PR comments
   GITHUB_REPO           Fallback GitHub repo (overridden by --repo)

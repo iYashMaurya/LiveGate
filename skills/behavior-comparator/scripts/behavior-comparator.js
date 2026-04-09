@@ -40,60 +40,57 @@ function classifyAnomaly(probeId, field, baselineVal, currentVal) {
   return null;
 }
 
-async function enrichBodyAnomaliesWithLyzr(anomalies, probeResults, baseline) {
-  const hashAnomalies = anomalies.filter(a => a.type === 'response_body_change');
-  if (hashAnomalies.length === 0) return anomalies;
+async function analyzeAnomaliesWithLyzr(anomalies, changeManifest, probeResults) {
+  if (anomalies.length === 0) return anomalies;
 
-  const enriched = [...anomalies];
+  const probeContext = (probeResults.results || []).map(r => ({
+    id: r.probe_id,
+    status: r.status_code,
+    latency: r.latency_ms,
+    body_preview: r.response_body_preview?.slice(0, 200) || null,
+  }));
 
-  for (const anomaly of hashAnomalies) {
-    const result = (probeResults.results || []).find(r => r.probe_id === anomaly.probe_id);
-    const base = baseline[anomaly.probe_id];
+  const result = await lyzrChat({
+    message: `You are analyzing deployment anomalies for a behavioral regression detector.
 
-    const basePreview = base?.response_body_preview;
-    const currPreview = result?.response_body_preview;
-    if (!basePreview || !currPreview) continue;
+The deployment changed:
+${changeManifest?.change_description || 'Unknown change'}
 
-    try {
-      const lyzrResult = await lyzrChat({
-        message: `Compare these two API responses for probe ${anomaly.probe_id}.
+Anomalies detected:
+${JSON.stringify(anomalies, null, 2)}
 
-BEFORE deployment:
-${basePreview}
+Probe results (what the new deployment returned):
+${JSON.stringify(probeContext, null, 2)}
 
-AFTER deployment:
-${currPreview}
+For EACH anomaly, explain:
+1. Is this likely caused by the change described, or is it unexpected?
+2. What specifically changed in plain English?
+3. Is it a regression (bad) or an expected change (acceptable)?
 
-Return ONLY a JSON object:
-{
-  "semantic_change": "one sentence describing exactly what changed in the data",
-  "is_regression": true,
-  "regression_reason": "why this is a regression, or null if it is an expected/benign change"
-}`,
-        userId: 'livegate_comparator',
-      });
+Return ONLY a JSON array — one object per anomaly in the same order:
+[{
+  "probe_id": "probe_001",
+  "ai_explanation": "The orders endpoint now filters by priority but the index was not created, causing a full table scan. This explains the 340% latency increase.",
+  "is_expected_change": false,
+  "severity_recommendation": "high",
+  "suggested_action": "Add index on orders.priority before deploying"
+}]`,
+  });
 
-      if (!lyzrResult) continue;
+  if (!result?.text) return anomalies;
 
-      const parsed = parseLyzrJson(lyzrResult.text);
-      const idx = enriched.findIndex(a => a.probe_id === anomaly.probe_id && a.type === 'response_body_change');
-      if (idx !== -1) {
-        enriched[idx] = {
-          ...enriched[idx],
-          semantic_change: parsed.semantic_change,
-          is_regression: parsed.is_regression,
-          regression_reason: parsed.regression_reason,
-          detail: `${enriched[idx].detail} | Lyzr: ${parsed.semantic_change}`,
-        };
-      }
-
-      process.stderr.write(`[lyzr] Enriched ${anomaly.probe_id}: ${parsed.semantic_change}\n`);
-    } catch (err) {
-      process.stderr.write(`[lyzr] Enrichment failed for ${anomaly.probe_id}: ${err.message}\n`);
-    }
+  try {
+    const analyses = parseLyzrJson(result.text);
+    return anomalies.map((anomaly, i) => ({
+      ...anomaly,
+      ...(analyses[i] || {}),
+      detail: analyses[i]?.ai_explanation
+        ? `${anomaly.detail} | Lyzr: ${analyses[i].ai_explanation}`
+        : anomaly.detail,
+    }));
+  } catch {
+    return anomalies;
   }
-
-  return enriched;
 }
 
 async function main() {
@@ -154,8 +151,17 @@ async function main() {
       }
     }
 
-    // Enrich hash anomalies with AI semantic comparison
-    const enrichedAnomalies = await enrichBodyAnomaliesWithLyzr(anomalies, probeResults, baseline);
+    // Load change manifest for Lyzr context
+    let changeManifest = null;
+    try {
+      const manifestPath = `${outputDir}/change-manifest.json`;
+      if (existsSync(manifestPath)) {
+        changeManifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+      }
+    } catch { /* continue */ }
+
+    // Lyzr analyzes ALL anomalies with full pipeline context
+    const enrichedAnomalies = await analyzeAnomaliesWithLyzr(anomalies, changeManifest, probeResults);
 
     // Compute confidence score
     const summary = { critical: 0, high: 0, medium: 0, low: 0 };

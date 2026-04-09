@@ -100,35 +100,41 @@ function parseDiff(diffContent) {
   return files;
 }
 
-async function enhanceWithLyzr(rawDiff, files, overallRisk) {
-  try {
-    const result = await lyzrChat({
-      message: `Analyze this git diff and return ONLY a JSON object with this exact shape:
+async function analyzeWithLyzr(rawDiff) {
+  const result = await lyzrChat({
+    message: `Analyze this git diff for a deployment gate.
+
+Return ONLY this JSON, no markdown:
 {
-  "change_description": "2-sentence plain English summary of what changed and why it matters for a deployment gate",
+  "change_description": "2 sentences: what changed and why it matters for deployment safety",
   "affected_routes": [
-    { "method": "GET", "path": "/api/orders", "risk_level": "high", "change_summary": "Added priority filter that bypasses existing cache layer" }
+    {
+      "method": "GET",
+      "path": "/api/orders",
+      "risk_level": "high",
+      "change_summary": "Added priority filter that queries without using the orders_priority index"
+    }
   ],
-  "overall_risk": "high"
+  "affected_db_operations": ["SELECT from orders WHERE priority = ?"],
+  "overall_risk": "high",
+  "probe_targets": ["GET /api/orders", "GET /api/orders/:id"]
 }
 
-Risk levels: critical (auth/security), high (data mutations, query logic), medium (new params, validation), low (logging/comments).
+Risk levels:
+- critical: auth, sessions, payments, data deletion
+- high: query logic, data mutations, schema changes
+- medium: new parameters, validation changes
+- low: logging, comments, config
 
-Git diff:
-${rawDiff.slice(0, 8000)}
+Diff:
+${rawDiff.slice(0, 10000)}`,
+  });
 
-Routes already detected by static analysis (may be incomplete): ${JSON.stringify(files.flatMap(f => f.affected_routes))}
-
-Return ONLY the JSON object, no markdown.`,
-      userId: 'livegate_diff_reader',
-    });
-
-    if (!result) return null;
-    return parseLyzrJson(result.text);
-  } catch (err) {
-    process.stderr.write(`[diff-reader] Lyzr enhancement failed: ${err.message}, using regex results\n`);
-    return null;
+  if (!result?.text) {
+    throw new Error('Lyzr returned empty response for diff analysis');
   }
+
+  return parseLyzrJson(result.text);
 }
 
 function computeOverallRisk(files) {
@@ -166,32 +172,37 @@ async function main() {
       return;
     }
 
-    const files = parseDiff(diffContent);
-    const regexRoutes = files.flatMap(f =>
+    // Primary: Lyzr semantic analysis
+    const lyzrAnalysis = await analyzeWithLyzr(diffContent);
+
+    // Supplement: regex catches any routes Lyzr missed
+    const regexFiles = parseDiff(diffContent);
+    const regexRoutes = regexFiles.flatMap(f =>
       f.affected_routes.map(r => ({
         method: r.split(' ')[0],
         path: r.split(' ').slice(1).join(' '),
-        file: f.file_path,
         risk_level: f.risk_level,
-        risk_reason: f.risk_reason,
+        change_summary: 'Detected by static analysis',
       }))
     );
-    const allDbOps = files.flatMap(f => f.affected_db_operations);
-    const regexTargets = [...new Set(files.flatMap(f => f.affected_routes))];
 
-    // Enhance with Lyzr if configured
-    const lyzrEnhancement = await enhanceWithLyzr(diffContent, files, computeOverallRisk(files));
+    // Merge: Lyzr routes take precedence, regex fills gaps
+    const allRoutes = [...(lyzrAnalysis.affected_routes || [])];
+    for (const regexRoute of regexRoutes) {
+      const alreadyFound = allRoutes.some(
+        r => r.method === regexRoute.method && r.path === regexRoute.path
+      );
+      if (!alreadyFound) allRoutes.push({ ...regexRoute, source: 'regex_supplement' });
+    }
 
     const output = {
-      diff_summary: `${files.length} file(s) changed`,
-      changed_files: files.length,
-      change_description: lyzrEnhancement?.change_description || `${files.length} file(s) changed — static analysis only`,
-      affected_routes: lyzrEnhancement?.affected_routes || regexRoutes,
-      affected_db_operations: [...new Set(allDbOps)],
-      overall_risk: lyzrEnhancement?.overall_risk || computeOverallRisk(files),
-      probe_targets: lyzrEnhancement?.affected_routes
-        ? lyzrEnhancement.affected_routes.map(r => `${r.method} ${r.path}`)
-        : regexTargets,
+      diff_summary: `${regexFiles.length} file(s) changed`,
+      changed_files: regexFiles.length,
+      change_description: lyzrAnalysis.change_description,
+      affected_routes: allRoutes,
+      affected_db_operations: lyzrAnalysis.affected_db_operations || [],
+      overall_risk: lyzrAnalysis.overall_risk,
+      probe_targets: [...new Set(allRoutes.map(r => `${r.method} ${r.path}`))],
     };
 
     console.log(JSON.stringify(output, null, 2));
