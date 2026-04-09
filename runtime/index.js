@@ -3,6 +3,7 @@ import { promisify } from 'util';
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
+import { randomUUID } from 'crypto';
 import chalk from 'chalk';
 import 'dotenv/config';
 
@@ -24,10 +25,10 @@ function writeIntermediate(name, data) {
   writeFileSync(resolve(MEMORY_DIR, name), JSON.stringify(data, null, 2));
 }
 
-async function runScript(scriptPath, args = []) {
+async function runScript(scriptPath, args = [], extraEnv = {}) {
   const { stdout, stderr } = await execFileAsync('node', [resolve(ROOT, scriptPath), ...args], {
     cwd: ROOT,
-    env: { ...process.env },
+    env: { ...process.env, ...extraEnv },
     timeout: 120000,
     maxBuffer: 10 * 1024 * 1024,
   });
@@ -52,10 +53,17 @@ function writeEscalateVerdict(errorMessage) {
 export default async function run({ gitDiffPath, logSource, logPath, stagingUrl, githubRepo, prNumber }) {
   ensureMemoryDir();
 
+  // Single Lyzr session across the entire pipeline — all skills share context
+  const sessionId = randomUUID();
+  const lyzrEnv = { LYZR_SESSION_ID: sessionId };
+  if (process.env.LYZR_API_KEY) {
+    console.log(chalk.cyan(`  Lyzr session: ${sessionId}`));
+  }
+
   try {
     // Step 1: diff-reader
     console.log(chalk.green('▶ [1/6] Running diff-reader...'));
-    const diffOutput = await runScript('skills/diff-reader/scripts/diff-reader.js', [gitDiffPath]);
+    const diffOutput = await runScript('skills/diff-reader/scripts/diff-reader.js', [gitDiffPath], lyzrEnv);
     const changeManifest = JSON.parse(diffOutput);
     writeIntermediate('change-manifest.json', changeManifest);
     console.log(chalk.blue(`  ✓ diff-reader complete: ${changeManifest.changed_files} file(s), ${changeManifest.probe_targets.length} target(s), risk: ${changeManifest.overall_risk}`));
@@ -80,7 +88,7 @@ export default async function run({ gitDiffPath, logSource, logPath, stagingUrl,
     const logPatternsOutput = await runScript('skills/log-miner/scripts/log-miner.js', [
       logPath,
       JSON.stringify(changeManifest.probe_targets),
-    ]);
+    ], lyzrEnv);
     const logPatterns = JSON.parse(logPatternsOutput);
     writeIntermediate('log-patterns.json', logPatterns);
     console.log(chalk.blue(`  ✓ log-miner complete: ${logPatterns.total_requests_analyzed} requests analyzed, ${logPatterns.patterns.length} pattern(s)`));
@@ -92,7 +100,7 @@ export default async function run({ gitDiffPath, logSource, logPath, stagingUrl,
     const probeSetOutput = await runScript('skills/probe-generator/scripts/probe-generator.js', [
       changeManifestPath,
       logPatternsPath,
-    ]);
+    ], lyzrEnv);
     const probeSet = JSON.parse(probeSetOutput);
     writeIntermediate('probe-set.json', probeSet);
     console.log(chalk.blue(`  ✓ probe-generator complete: ${probeSet.total_probes} probe(s) generated`));
@@ -100,20 +108,20 @@ export default async function run({ gitDiffPath, logSource, logPath, stagingUrl,
     // Step 4: env-prober (as probe-executor sub-agent)
     console.log(chalk.green('▶ [4/6] Running env-prober (probe-executor agent)...'));
     const probeSetPath = resolve(MEMORY_DIR, 'probe-set.json');
-    const probeResultsOutput = await runScript('skills/env-prober/scripts/env-prober.js', [probeSetPath]);
+    const probeResultsOutput = await runScript('skills/env-prober/scripts/env-prober.js', [probeSetPath], lyzrEnv);
     const probeResults = JSON.parse(probeResultsOutput);
     console.log(chalk.blue(`  ✓ env-prober complete: ${probeResults.probes_fired} probe(s) fired`));
 
     // Step 5: behavior-comparator
     console.log(chalk.green('▶ [5/6] Running behavior-comparator...'));
-    const anomalyOutput = await runScript('skills/behavior-comparator/scripts/behavior-comparator.js', []);
+    const anomalyOutput = await runScript('skills/behavior-comparator/scripts/behavior-comparator.js', [], lyzrEnv);
     const anomalyReport = JSON.parse(anomalyOutput);
     console.log(chalk.blue(`  ✓ behavior-comparator complete: confidence=${anomalyReport.confidence_score}, anomalies=${anomalyReport.anomalies.length}`));
 
     // Step 6: verdict-writer (as verdict-auditor sub-agent)
     console.log(chalk.green('▶ [6/6] Running verdict-writer (verdict-auditor agent)...'));
     // Set GitHub env vars for verdict-writer if provided
-    const verdictEnv = { ...process.env };
+    const verdictEnv = { ...process.env, ...lyzrEnv };
     if (githubRepo) verdictEnv.GITHUB_REPO = githubRepo;
     if (prNumber) verdictEnv.PR_NUMBER = String(prNumber);
 

@@ -38,7 +38,7 @@ export async function lyzrChat({ message, sessionId, userId = 'livegate_pipeline
     return null; // Callers fall back to deterministic behavior
   }
 
-  const sid = sessionId || randomUUID();
+  const sid = sessionId || process.env.LYZR_SESSION_ID || randomUUID();
 
   const response = await fetch(LYZR_CHAT_ENDPOINT, {
     method: 'POST',
