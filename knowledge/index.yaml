@@ -1,1 +1,5 @@
-documents: []
+documents:
+  - path: real-env-testing-guide.md
+    tags: [testing, philosophy, real-environment]
+    priority: high
+    always_load: true

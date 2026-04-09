@@ -4,4 +4,9 @@ node_modules
 dist/
 *.log
 !demo/sample-logs/access.log
-memory/
+memory/runtime/
+memory/archive/
+!memory/memory.yaml
+!memory/MEMORY.md
+!memory/runtime/baseline.json
+!memory/runtime/deployments.md

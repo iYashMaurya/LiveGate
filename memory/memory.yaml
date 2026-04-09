@@ -3,6 +3,10 @@ layers:
     path: MEMORY.md
     max_lines: 200
     format: markdown
+  - name: runtime
+    path: runtime/
+    format: json
+    rotation: never
   - name: archive
     path: archive/
     format: yaml
@@ -11,5 +15,5 @@ update_triggers:
   - on_session_end
   - on_explicit_save
 archive_policy:
-  max_entries: 1000
-  compress_after: 90d
+  max_entries: 500
+  compress_after: 30d
