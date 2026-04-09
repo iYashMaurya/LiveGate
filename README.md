@@ -11,7 +11,7 @@
 
 > **"Your test suite is green. Production is on fire. These are not contradictions."**
 
-⚠️ **STATUS: SHIPS REAL VERDICTS**
+ **STATUS: SHIPS REAL VERDICTS**
 
 ---
 
@@ -94,9 +94,9 @@ That's not a feature — that's **Segregation of Duties**, enforced in code.
 
 | Verdict | Means | Exit Code | PR |
 |---------|-------|-----------|-----|
-| **GO ✓** | Replayed real traffic. Behavior unchanged. Ship it. | `0` | ✅ merge allowed |
-| **ESCALATE ⚠** | Something changed. Not sure if it matters. Human eyes needed. | `2` | ⚠️ warning |
-| **NO-GO ✗** | Regression detected. Latency spiked. Status codes broke. Do not merge. | `1` | 🚫 blocked |
+| **GO ✓** | Replayed real traffic. Behavior unchanged. Ship it. | `0` |  merge allowed |
+| **ESCALATE ⚠** | Something changed. Not sure if it matters. Human eyes needed. | `2` |  warning |
+| **NO-GO ✗** | Regression detected. Latency spiked. Status codes broke. Do not merge. | `1` |  blocked |
 
 ---
 
@@ -357,7 +357,7 @@ axios           HTTP probe client
 
 ```
                       /\_/\
-                     ( -.-)   < "Probes fired. Verdict written." >
+                     ( -.- )   < "Probes fired. Verdict written." >
                       > ^ <
                     LiveGate
            Because "it works on my machine"
