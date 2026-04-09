@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import axios from 'axios';
 import 'dotenv/config';
+import { lyzrChat } from '../../../lyzr/lyzr-adapter.js';
 
 function determineVerdict(report) {
   const { confidence_score, summary } = report;
@@ -25,56 +26,35 @@ function verdictEmoji(verdict) {
   }
 }
 
-async function composePRCommentWithClaude(report, verdict, changeManifest) {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return composePRCommentFallback(report, verdict);
-  }
-
+async function composePRCommentWithLyzr(report, verdict, changeManifest) {
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        system: 'You write GitHub PR comments for a deployment gate called LiveGate. Be direct, specific, and actionable. Use markdown. No fluff.',
-        messages: [{
-          role: 'user',
-          content: `Write a GitHub PR comment for this deployment gate result.
+    const lyzrResult = await lyzrChat({
+      message: `Write a GitHub PR comment for a deployment gate verdict. Be direct, specific, and actionable. Use markdown.
 
 VERDICT: ${verdict}
 CONFIDENCE: ${report.confidence_score}
 PROBES FIRED: ${report.probes_compared}
-
 CHANGE SUMMARY: ${changeManifest?.change_description || 'Not available'}
 
-ANOMALIES FOUND:
-${JSON.stringify(report.anomalies, null, 2)}
+ANOMALIES:
+${JSON.stringify(report.anomalies.slice(0, 10), null, 2)}
 
 Rules:
-- Start with a clear verdict header using emoji: ✅ GO, ❌ NO-GO, or ⚠️ ESCALATE
-- For each anomaly that has semantic_change, explain it in plain English (not JSON)
-- For NO-GO, give a specific action the developer should take
-- For ESCALATE, explain exactly what a human reviewer should check
-- For GO, briefly confirm what was tested and that it passed
-- End with a one-line summary of probes fired
-- Keep the whole comment under 400 words
-- Do NOT use code blocks or JSON in the comment`,
-        }],
-      }),
+- Start with a clear header: ✅ GO, ❌ NO-GO, or ⚠️ ESCALATE
+- For each anomaly with semantic_change, explain it in plain English (not JSON)
+- For NO-GO: give the specific action the developer should take
+- For ESCALATE: explain exactly what a human reviewer should check
+- For GO: briefly confirm what was tested and that it passed
+- End with: probes fired count, powered by Lyzr Studio
+- Keep under 400 words total
+- Do NOT wrap in markdown code blocks — return raw markdown only`,
+      userId: 'livegate_verdict_auditor',
     });
 
-    const data = await response.json();
-    const comment = data.content[0].text.trim();
-    process.stderr.write(`[verdict] AI-generated PR comment (${comment.length} chars)\n`);
-    return comment;
+    return lyzrResult?.text || null;
   } catch (err) {
-    process.stderr.write(`[verdict] Claude PR comment failed: ${err.message}, using fallback\n`);
-    return composePRCommentFallback(report, verdict);
+    process.stderr.write(`[lyzr] PR comment generation failed: ${err.message}, using fallback\n`);
+    return null;
   }
 }
 
@@ -120,7 +100,7 @@ Probes derived from real traffic patterns from the last 24h of logs.
 ${recommendation}
 
 ---
-*LiveGate v0.1.0 | Real-environment testing | ${probes_compared} probes analyzed*`;
+*LiveGate v0.1.0 | gitagent standard | Powered by Lyzr Studio*`;
 }
 
 async function main() {
@@ -141,7 +121,9 @@ async function main() {
       changeManifest = JSON.parse(readFileSync(`${outputDir}/change-manifest.json`, 'utf-8'));
     } catch { /* not available */ }
 
-    const prCommentMarkdown = await composePRCommentWithClaude(report, verdict, changeManifest);
+    const prCommentMarkdown =
+      (await composePRCommentWithLyzr(report, verdict, changeManifest))
+      || composePRCommentFallback(report, verdict);
 
     const verdictOutput = {
       verdict,

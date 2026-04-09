@@ -21,6 +21,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ─── Detect Jaeger / choose LOG_SOURCE ────────────────────────
+
+JAEGER_URL="${JAEGER_URL:-http://localhost:16686}"
+if curl -s --max-time 2 "$JAEGER_URL/api/services" > /dev/null 2>&1; then
+  export LOG_SOURCE=otel
+  echo "✓ Jaeger detected at $JAEGER_URL — using OTel trace mining"
+else
+  export LOG_SOURCE=file
+  echo "⚠ Jaeger not detected at $JAEGER_URL — using nginx log fallback"
+fi
+echo ""
+
 # ─── Reset runtime state ──────────────────────────────────────
 
 rm -rf "$ROOT_DIR/memory/runtime"

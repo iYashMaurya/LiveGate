@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 import 'dotenv/config';
+import { lyzrChat, parseLyzrJson } from '../../../lyzr/lyzr-adapter.js';
 
 function classifyAnomaly(probeId, field, baselineVal, currentVal) {
   if (field === 'status_code') {
@@ -39,9 +40,7 @@ function classifyAnomaly(probeId, field, baselineVal, currentVal) {
   return null;
 }
 
-async function enrichHashAnomalies(anomalies, probeResults, baseline) {
-  if (!process.env.ANTHROPIC_API_KEY) return anomalies;
-
+async function enrichBodyAnomaliesWithLyzr(anomalies, probeResults, baseline) {
   const hashAnomalies = anomalies.filter(a => a.type === 'response_body_change');
   if (hashAnomalies.length === 0) return anomalies;
 
@@ -50,57 +49,47 @@ async function enrichHashAnomalies(anomalies, probeResults, baseline) {
   for (const anomaly of hashAnomalies) {
     const result = (probeResults.results || []).find(r => r.probe_id === anomaly.probe_id);
     const base = baseline[anomaly.probe_id];
-    if (!result?.response_body_preview || !base?.response_body_preview) continue;
+
+    const basePreview = base?.response_body_preview;
+    const currPreview = result?.response_body_preview;
+    if (!basePreview || !currPreview) continue;
 
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 500,
-          system: 'You compare API responses. Return ONLY valid JSON, no markdown.',
-          messages: [{
-            role: 'user',
-            content: `Compare these two API responses for probe ${anomaly.probe_id}.
+      const lyzrResult = await lyzrChat({
+        message: `Compare these two API responses for probe ${anomaly.probe_id}.
 
-BASELINE (before deploy):
-${base.response_body_preview}
+BEFORE deployment:
+${basePreview}
 
-CURRENT (after deploy):
-${result.response_body_preview}
+AFTER deployment:
+${currPreview}
 
-Return JSON:
+Return ONLY a JSON object:
 {
-  "semantic_change": "one sentence describing what actually changed in the data",
-  "is_regression": true/false,
-  "regression_reason": "why this is a regression, or null if not a regression"
+  "semantic_change": "one sentence describing exactly what changed in the data",
+  "is_regression": true,
+  "regression_reason": "why this is a regression, or null if it is an expected/benign change"
 }`,
-          }],
-        }),
+        userId: 'livegate_comparator',
       });
 
-      const data = await response.json();
-      const parsed = JSON.parse(data.content[0].text.trim().replace(/```json|```/g, ''));
+      if (!lyzrResult) continue;
 
-      const idx = enriched.findIndex(a => a.probe_id === anomaly.probe_id && a.type === anomaly.type);
+      const parsed = parseLyzrJson(lyzrResult.text);
+      const idx = enriched.findIndex(a => a.probe_id === anomaly.probe_id && a.type === 'response_body_change');
       if (idx !== -1) {
         enriched[idx] = {
-          ...anomaly,
+          ...enriched[idx],
           semantic_change: parsed.semantic_change,
           is_regression: parsed.is_regression,
           regression_reason: parsed.regression_reason,
-          detail: `${anomaly.detail} | AI: ${parsed.semantic_change}`,
+          detail: `${enriched[idx].detail} | Lyzr: ${parsed.semantic_change}`,
         };
       }
 
-      process.stderr.write(`[comparator] AI enriched ${anomaly.probe_id}: ${parsed.semantic_change}\n`);
+      process.stderr.write(`[lyzr] Enriched ${anomaly.probe_id}: ${parsed.semantic_change}\n`);
     } catch (err) {
-      process.stderr.write(`[comparator] AI enrichment failed for ${anomaly.probe_id}: ${err.message}\n`);
+      process.stderr.write(`[lyzr] Enrichment failed for ${anomaly.probe_id}: ${err.message}\n`);
     }
   }
 
@@ -166,7 +155,7 @@ async function main() {
     }
 
     // Enrich hash anomalies with AI semantic comparison
-    const enrichedAnomalies = await enrichHashAnomalies(anomalies, probeResults, baseline);
+    const enrichedAnomalies = await enrichBodyAnomaliesWithLyzr(anomalies, probeResults, baseline);
 
     // Compute confidence score
     const summary = { critical: 0, high: 0, medium: 0, low: 0 };

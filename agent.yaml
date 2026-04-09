@@ -6,12 +6,12 @@ author: "LiveGate"
 license: MIT
 
 model:
-  preferred: claude-sonnet-4-6
+  preferred: claude-sonnet-4-20250514
   fallback:
     - claude-haiku-4-5-20251001
   constraints:
-    temperature: 0.2
-    max_tokens: 4096
+    temperature: 0.1
+    max_tokens: 1500
 
 skills:
   - diff-reader

@@ -1,5 +1,6 @@
 import { readFileSync } from 'fs';
 import 'dotenv/config';
+import { lyzrChat, parseLyzrJson } from '../../../lyzr/lyzr-adapter.js';
 
 const ROUTE_PATTERNS = [
   /app\.(get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]+)['"`]/gi,
@@ -99,52 +100,33 @@ function parseDiff(diffContent) {
   return files;
 }
 
-async function enhanceWithClaude(rawDiff, candidateRoutes) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return null;
-
+async function enhanceWithLyzr(rawDiff, files, overallRisk) {
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        system: 'You are a code change analyzer. Read a git diff and return ONLY valid JSON, no markdown, no explanation.',
-        messages: [{
-          role: 'user',
-          content: `Analyze this git diff and return JSON with this exact shape:
+    const result = await lyzrChat({
+      message: `Analyze this git diff and return ONLY a JSON object with this exact shape:
 {
+  "change_description": "2-sentence plain English summary of what changed and why it matters for a deployment gate",
   "affected_routes": [
-    { "method": "GET", "path": "/api/orders", "risk_level": "high", "change_summary": "Added priority filter that bypasses cache" }
+    { "method": "GET", "path": "/api/orders", "risk_level": "high", "change_summary": "Added priority filter that bypasses existing cache layer" }
   ],
-  "overall_risk": "high",
-  "change_description": "2-sentence plain English summary of what changed and why it matters for deployment"
+  "overall_risk": "high"
 }
 
-Risk levels: "critical" (auth/security changes), "high" (data mutations, query logic), "medium" (new params, validation), "low" (logging, comments).
+Risk levels: critical (auth/security), high (data mutations, query logic), medium (new params, validation), low (logging/comments).
 
-Diff:
-\`\`\`
+Git diff:
 ${rawDiff.slice(0, 8000)}
-\`\`\`
 
-Seed routes already detected by regex (may be incomplete): ${JSON.stringify(candidateRoutes)}
+Routes already detected by static analysis (may be incomplete): ${JSON.stringify(files.flatMap(f => f.affected_routes))}
 
-Return ONLY the JSON object.`,
-        }],
-      }),
+Return ONLY the JSON object, no markdown.`,
+      userId: 'livegate_diff_reader',
     });
 
-    const data = await response.json();
-    const text = data.content[0].text.trim();
-    return JSON.parse(text.replace(/```json|```/g, '').trim());
+    if (!result) return null;
+    return parseLyzrJson(result.text);
   } catch (err) {
-    process.stderr.write(`[diff-reader] Claude enhancement failed: ${err.message}, using regex results\n`);
+    process.stderr.write(`[diff-reader] Lyzr enhancement failed: ${err.message}, using regex results\n`);
     return null;
   }
 }
@@ -197,48 +179,19 @@ async function main() {
     const allDbOps = files.flatMap(f => f.affected_db_operations);
     const regexTargets = [...new Set(files.flatMap(f => f.affected_routes))];
 
-    // Enhance with Claude if API key is available
-    const claudeResult = await enhanceWithClaude(diffContent, regexTargets);
-
-    let allRoutes = regexRoutes;
-    let overallRisk = computeOverallRisk(files);
-    let changeDescription = `${files.length} file(s) changed`;
-    let probeTargets = regexTargets;
-
-    if (claudeResult) {
-      process.stderr.write(`[diff-reader] Claude enhanced: ${claudeResult.affected_routes?.length || 0} routes, risk=${claudeResult.overall_risk}\n`);
-
-      // Merge Claude routes with regex routes (deduplicate by method+path)
-      const seen = new Set(regexRoutes.map(r => `${r.method} ${r.path}`));
-      const claudeRoutes = (claudeResult.affected_routes || []).map(r => ({
-        method: r.method,
-        path: r.path,
-        file: regexRoutes.find(rr => rr.path === r.path)?.file || 'unknown',
-        risk_level: r.risk_level || 'medium',
-        risk_reason: r.change_summary || 'Identified by AI analysis',
-      }));
-
-      for (const cr of claudeRoutes) {
-        const key = `${cr.method} ${cr.path}`;
-        if (!seen.has(key)) {
-          allRoutes.push(cr);
-          seen.add(key);
-        }
-      }
-
-      probeTargets = [...new Set(allRoutes.map(r => `${r.method} ${r.path}`))];
-      overallRisk = claudeResult.overall_risk || overallRisk;
-      changeDescription = claudeResult.change_description || changeDescription;
-    }
+    // Enhance with Lyzr if configured
+    const lyzrEnhancement = await enhanceWithLyzr(diffContent, files, computeOverallRisk(files));
 
     const output = {
-      diff_summary: changeDescription,
+      diff_summary: `${files.length} file(s) changed`,
       changed_files: files.length,
-      affected_routes: allRoutes,
+      change_description: lyzrEnhancement?.change_description || `${files.length} file(s) changed — static analysis only`,
+      affected_routes: lyzrEnhancement?.affected_routes || regexRoutes,
       affected_db_operations: [...new Set(allDbOps)],
-      overall_risk: overallRisk,
-      change_description: changeDescription,
-      probe_targets: probeTargets,
+      overall_risk: lyzrEnhancement?.overall_risk || computeOverallRisk(files),
+      probe_targets: lyzrEnhancement?.affected_routes
+        ? lyzrEnhancement.affected_routes.map(r => `${r.method} ${r.path}`)
+        : regexTargets,
     };
 
     console.log(JSON.stringify(output, null, 2));

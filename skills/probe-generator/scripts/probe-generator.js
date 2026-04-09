@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import 'dotenv/config';
+import { lyzrChat, parseLyzrJson } from '../../../lyzr/lyzr-adapter.js';
 
 const RISK_WEIGHTS = { critical: 1.0, high: 0.75, medium: 0.5, low: 0.25 };
 
@@ -64,69 +65,51 @@ function buildProbeFromPattern(p, probeCounter, totalPatterns, riskLevel) {
   };
 }
 
-async function generateEdgeCaseProbes(changeManifest, existingProbes) {
-  if (!process.env.ANTHROPIC_API_KEY) return [];
-
+async function generateEdgeCasesWithLyzr(changeManifest, existingProbes) {
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        system: 'You generate HTTP test probes. Return ONLY valid JSON arrays, no markdown.',
-        messages: [{
-          role: 'user',
-          content: `A deployment changed these routes:
-${JSON.stringify(changeManifest.affected_routes, null, 2)}
+    const result = await lyzrChat({
+      message: `You are generating HTTP test probes for a deployment gate.
 
-Change summary: ${changeManifest.change_description || 'Not available'}
+The deployment changed these routes:
+${JSON.stringify(changeManifest.affected_routes || changeManifest.probe_targets, null, 2)}
 
-Existing probes already cover:
-${existingProbes.slice(0, 20).map(p => `${p.method} ${p.path} params=${JSON.stringify(p.query_params)}`).join('\n')}
+Change summary: ${changeManifest.change_description || 'No description available'}
 
-Generate 3-5 additional edge-case probes that specifically test the changed behavior. 
-Focus on: boundary values, null/empty inputs, the specific parameter or field that changed.
+Already-generated probes cover:
+${existingProbes.slice(0, 5).map(p => `${p.method} ${p.path} params=${JSON.stringify(p.query_params)}`).join('\n')}
 
-Return a JSON array of probe objects matching this shape exactly:
+Generate 3-5 additional edge-case probes that specifically target the changed behavior.
+Focus on: boundary values, null/empty inputs, the specific field or param that changed.
+
+Return ONLY a JSON array:
 [{
   "method": "GET",
-  "path": "/api/orders", 
+  "path": "/api/orders",
   "query_params": {"priority": ""},
   "body": null,
   "headers": {"Accept": "application/json"},
-  "source": "ai_generated",
+  "source": "lyzr_generated",
   "risk_level": "high",
-  "rationale": "Tests empty priority string which the new filter doesn't sanitize"
-}]
-
-Return ONLY the JSON array.`,
-        }],
-      }),
+  "rationale": "Tests empty priority string against new filter logic"
+}]`,
+      userId: 'livegate_probe_generator',
     });
 
-    const data = await response.json();
-    const text = data.content[0].text.trim();
-    const edgeProbes = JSON.parse(text.replace(/```json|```/g, '').trim());
+    if (!result) return [];
 
-    process.stderr.write(`[probe-gen] Claude generated ${edgeProbes.length} edge-case probes\n`);
+    const edgeProbes = parseLyzrJson(result.text);
+    process.stderr.write(`[lyzr] Generated ${edgeProbes.length} edge-case probes\n`);
 
     return edgeProbes.map((p, i) => ({
-      ...p,
-      id: `probe_ai_${String(i + 1).padStart(3, '0')}`,
-      priority: 0.9,
+      id: `probe_lyzr_${String(i + 1).padStart(3, '0')}`,
+      priority: 0.88,
       expected_status: 200,
       baseline_latency_ms: null,
-      headers: p.headers || { Accept: 'application/json' },
-      query_params: p.query_params || {},
-      body: p.body || null,
+      frequency_rank: null,
+      ...p,
     }));
   } catch (err) {
-    process.stderr.write(`[probe-gen] Claude edge-case generation failed: ${err.message}\n`);
+    process.stderr.write(`[lyzr] Edge case generation failed: ${err.message}\n`);
     return [];
   }
 }
@@ -222,9 +205,13 @@ async function main() {
       }
     }
 
-    // Generate AI edge-case probes if API key is available
-    const edgeCaseProbes = await generateEdgeCaseProbes(changeManifest, probes);
-    probes.push(...edgeCaseProbes);
+    // Generate Lyzr edge-case probes if configured
+    try {
+      const edgeCases = await generateEdgeCasesWithLyzr(changeManifest, probes);
+      probes.push(...edgeCases);
+    } catch (err) {
+      process.stderr.write(`[lyzr] Edge case generation failed: ${err.message}\n`);
+    }
 
     // Sort by priority descending
     probes.sort((a, b) => b.priority - a.priority);

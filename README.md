@@ -100,27 +100,27 @@ That's not a feature — that's **Segregation of Duties**, enforced in code.
 
 ---
 
-## 🧠 How AI Is Used
+## � Powered by Lyzr Studio
 
-Four surgical Claude calls. Each one has a fallback. The pipeline works without an API key.
+All AI inference in LiveGate routes through **Lyzr Studio** — not directly to a model provider.
+This gives LiveGate full observability, audit logging, and responsible AI enforcement on every call.
 
-```
-diff-reader       → Claude reads the full diff semantically, extracts routes
-                    and risk levels that regex misses. Falls back to regex.
+| Skill | What Lyzr Does |
+|-------|---------------|
+| `diff-reader` | Semantically understands what changed — routes, risk levels, plain-English summary |
+| `probe-generator` | Generates edge-case probes targeting the specific change, not just replaying logs |
+| `behavior-comparator` | Explains body changes in plain English ("orders now return empty array") |
+| `verdict-writer` | Writes a specific, actionable PR comment — not a template |
 
-probe-generator   → Claude generates 3-5 edge-case probes targeting the specific
-                    change (boundary values, null inputs, the exact param that
-                    changed). Falls back to traffic-only probes.
+The GO/NO-GO verdict itself is **deterministic** (not AI-generated).
+You don't want a probabilistic model blocking your production deploys.
+Lyzr is used where explanation and reasoning help — not where reliability is critical.
 
-behavior-comparator → Claude explains what changed in response bodies — not just
-                      "hash mismatch" but "response now returns an empty array
-                      instead of 3 orders." Falls back to hash comparison.
-
-verdict-writer    → Claude writes the PR comment with specific, actionable
-                    language. Falls back to template-based comment.
-```
-
-> **The GO/NO-GO/ESCALATE verdict itself is deterministic (not AI-generated)** because you don't want a probabilistic model as a deployment gate. AI is used where explanation and creativity help — not where reliability is critical.
+### Quick Setup
+1. Create a Lyzr account at [studio.lyzr.ai](https://studio.lyzr.ai)
+2. Follow `lyzr/README.md` to create the LiveGate agent (5 min)
+3. Add `LYZR_API_KEY` and `LYZR_AGENT_ID` to `.env`
+4. Run `bash demo/run-demo.sh` — Lyzr analysis is automatic
 
 ---
 
@@ -296,16 +296,15 @@ OTel solves all four. LiveGate uses traces when Jaeger is available, falls back 
 
 | Variable | Required | Description |
 |----------|----------|-------------|
+| `LYZR_API_KEY` | Yes | Lyzr Studio API key (from studio.lyzr.ai) |
+| `LYZR_AGENT_ID` | Yes | Lyzr Studio agent ID (after creating the LiveGate agent) |
 | `STAGING_BASE_URL` | Yes | Your real staging environment |
-| `ANTHROPIC_API_KEY` | No | For AI-assisted analysis |
-| `GITHUB_TOKEN` | No | PR comments |
-| `GITHUB_REPO` | No | GitHub repo in `owner/repo` format (for PR comments) |
-| `PR_NUMBER` | No | Pull request number (for PR comments) |
-| `LOG_SOURCE` | No | `otel` (production) or `file` (demo). Default: `otel` |
+| `LOG_SOURCE` | No | `otel` (production) or `file` (demo). Default: `file` |
 | `LOG_PATH` | No | Nginx log path (file mode fallback) |
-| `OTEL_BACKEND` | No | Trace backend. Default: `jaeger` |
 | `JAEGER_URL` | No | Jaeger HTTP API. Default: `http://localhost:16686` |
-| `LYZR_API_KEY` | No | Lyzr Studio API key (for managed agent hosting) |
+| `GITHUB_TOKEN` | No | PR comments |
+| `GITHUB_REPO` | No | GitHub repo in `owner/repo` format |
+| `PR_NUMBER` | No | Pull request number |
 
 ---
 
