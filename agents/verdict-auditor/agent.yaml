@@ -1,0 +1,14 @@
+spec_version: "0.1.0"
+name: verdict-auditor
+version: 0.1.0
+description: "Reviews probe results and writes the deployment verdict. Role: auditor. Cannot fire probes."
+model:
+  preferred: claude-sonnet-4-6
+  constraints:
+    temperature: 0.1
+    max_tokens: 2048
+skills:
+  - behavior-comparator
+  - verdict-writer
+tools:
+  - github-comment
