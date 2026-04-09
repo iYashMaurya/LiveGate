@@ -1,0 +1,97 @@
+name: pre-deploy-check
+description: "Full LiveGate deployment check: reads diff → mines real logs → generates probes → fires against real staging → compares behavior → writes verdict"
+version: 1.0.0
+
+inputs:
+  - name: git_diff_path
+    type: string
+    required: true
+    description: "Path to git diff file or 'HEAD~1' for last commit"
+  - name: log_source
+    type: string
+    required: false
+    default: "file"
+    description: "Log source: file | cloudwatch | datadog"
+  - name: log_path
+    type: string
+    required: true
+    description: "Path or ARN for access logs"
+  - name: staging_url
+    type: string
+    required: true
+    description: "Base URL of staging environment"
+  - name: github_repo
+    type: string
+    required: false
+    description: "owner/repo for PR comment posting"
+  - name: pr_number
+    type: integer
+    required: false
+    description: "Pull request number for PR comment"
+
+steps:
+  - id: read-diff
+    skill: diff-reader
+    description: "Parse git diff to find what changed"
+    inputs:
+      diff_path: ${{ inputs.git_diff_path }}
+    outputs: [probe_targets, overall_risk, changed_files]
+
+  - id: fetch-logs
+    tool: log-fetch
+    description: "Fetch real production logs"
+    depends_on: [read-diff]
+    inputs:
+      source: ${{ inputs.log_source }}
+      path_or_arn: ${{ inputs.log_path }}
+      window_hours: 24
+
+  - id: mine-logs
+    skill: log-miner
+    description: "Extract real traffic patterns for changed routes"
+    depends_on: [read-diff, fetch-logs]
+    inputs:
+      probe_targets: ${{ steps.read-diff.outputs.probe_targets }}
+      log_lines: ${{ steps.fetch-logs.outputs.log_lines }}
+
+  - id: generate-probes
+    skill: probe-generator
+    description: "Build real-traffic probe set from log patterns"
+    depends_on: [read-diff, mine-logs]
+    inputs:
+      change_manifest: ${{ steps.read-diff.outputs }}
+      usage_patterns: ${{ steps.mine-logs.outputs.patterns }}
+
+  - id: fire-probes
+    agent: probe-executor
+    skill: env-prober
+    description: "Fire probes against real staging environment (role: prober)"
+    depends_on: [generate-probes]
+    inputs:
+      probe_set: ${{ steps.generate-probes.outputs.probes }}
+      staging_base_url: ${{ inputs.staging_url }}
+
+  - id: compare-behavior
+    skill: behavior-comparator
+    description: "Compare new behavior against baseline"
+    depends_on: [fire-probes]
+    inputs:
+      probe_results_path: "memory/runtime/probe-results.json"
+      baseline_path: "memory/runtime/baseline.json"
+
+  - id: write-verdict
+    agent: verdict-auditor
+    skill: verdict-writer
+    description: "Write Go/No-Go verdict (role: auditor)"
+    depends_on: [compare-behavior]
+    inputs:
+      anomaly_report_path: "memory/runtime/anomaly-report.json"
+      github_repo: ${{ inputs.github_repo }}
+      pr_number: ${{ inputs.pr_number }}
+    conditions:
+      - ${{ steps.fire-probes.outputs.probes_fired > 0 }}
+
+error_handling:
+  on_failure: escalate
+  escalation_channel: "PR comment with ERROR status"
+  on_staging_unavailable: halt_and_notify
