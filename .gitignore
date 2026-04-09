@@ -3,3 +3,5 @@ node_modules
 .gitagent/
 dist/
 *.log
+!demo/sample-logs/access.log
+memory/

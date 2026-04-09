@@ -1,0 +1,43 @@
+diff --git a/src/routes/orders.js b/src/routes/orders.js
+index 3a1b2c4..8f9e0d1 100644
+--- a/src/routes/orders.js
++++ b/src/routes/orders.js
+@@ -1,6 +1,7 @@
+ import express from 'express';
+ import { db } from '../db/connection.js';
++import { calculatePriority } from '../utils/priority.js';
+ 
+ const router = express.Router();
+ 
+@@ -12,10 +13,15 @@ router.get('/api/orders', async (req, res) => {
+   try {
+     const status = req.query.status || 'pending';
+     const limit = parseInt(req.query.limit) || 100;
++    const priority = req.query.priority;
+ 
+-    const orders = await db.query(
+-      'SELECT id, user_id, status, total, created_at FROM orders WHERE status = ? LIMIT ?',
+-      [status, limit]
++    let query = 'SELECT id, user_id, status, total, priority, created_at FROM orders WHERE status = ?';
++    const params = [status];
++    if (priority) {
++      query += ' AND priority = ?';
++      params.push(priority);
++    }
++    query += ' ORDER BY created_at DESC LIMIT ?';
++    params.push(limit);
++    const orders = await db.query(query, params);
+ 
+-    res.json(orders);
++    res.json(orders.map(o => ({ ...o, priority: o.priority || calculatePriority(o) })));
+   } catch (err) {
+     res.status(500).json({ error: err.message });
+   }
+@@ -28,7 +34,7 @@ router.get('/api/orders/:id', async (req, res) => {
+   try {
+     const [order] = await db.query(
+-      'SELECT id, user_id, status, total, created_at FROM orders WHERE id = ?',
++      'SELECT id, user_id, status, total, priority, created_at FROM orders WHERE id = ?',
+       [req.params.id]
+     );
+     if (!order) return res.status(404).json({ error: 'Order not found' });
