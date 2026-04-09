@@ -25,7 +25,60 @@ function verdictEmoji(verdict) {
   }
 }
 
-function composePRComment(report, verdict) {
+async function composePRCommentWithClaude(report, verdict, changeManifest) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return composePRCommentFallback(report, verdict);
+  }
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: 'You write GitHub PR comments for a deployment gate called LiveGate. Be direct, specific, and actionable. Use markdown. No fluff.',
+        messages: [{
+          role: 'user',
+          content: `Write a GitHub PR comment for this deployment gate result.
+
+VERDICT: ${verdict}
+CONFIDENCE: ${report.confidence_score}
+PROBES FIRED: ${report.probes_compared}
+
+CHANGE SUMMARY: ${changeManifest?.change_description || 'Not available'}
+
+ANOMALIES FOUND:
+${JSON.stringify(report.anomalies, null, 2)}
+
+Rules:
+- Start with a clear verdict header using emoji: ✅ GO, ❌ NO-GO, or ⚠️ ESCALATE
+- For each anomaly that has semantic_change, explain it in plain English (not JSON)
+- For NO-GO, give a specific action the developer should take
+- For ESCALATE, explain exactly what a human reviewer should check
+- For GO, briefly confirm what was tested and that it passed
+- End with a one-line summary of probes fired
+- Keep the whole comment under 400 words
+- Do NOT use code blocks or JSON in the comment`,
+        }],
+      }),
+    });
+
+    const data = await response.json();
+    const comment = data.content[0].text.trim();
+    process.stderr.write(`[verdict] AI-generated PR comment (${comment.length} chars)\n`);
+    return comment;
+  } catch (err) {
+    process.stderr.write(`[verdict] Claude PR comment failed: ${err.message}, using fallback\n`);
+    return composePRCommentFallback(report, verdict);
+  }
+}
+
+function composePRCommentFallback(report, verdict) {
   const emoji = verdictEmoji(verdict);
   const { summary, anomalies, confidence_score, probes_compared } = report;
   const totalAnomalies = summary.critical + summary.high + summary.medium + summary.low;
@@ -81,7 +134,14 @@ async function main() {
     const report = JSON.parse(readFileSync(reportPath, 'utf-8'));
 
     const verdict = determineVerdict(report);
-    const prCommentMarkdown = composePRComment(report, verdict);
+
+    // Read change manifest for context (written by runtime orchestrator)
+    let changeManifest = null;
+    try {
+      changeManifest = JSON.parse(readFileSync(`${outputDir}/change-manifest.json`, 'utf-8'));
+    } catch { /* not available */ }
+
+    const prCommentMarkdown = await composePRCommentWithClaude(report, verdict, changeManifest);
 
     const verdictOutput = {
       verdict,

@@ -44,6 +44,7 @@ async function fireProbe(probe, baseUrl) {
       status_code: response.status,
       latency_ms: Date.now() - start,
       response_body_hash: sha256(bodyStr),
+      response_body_preview: bodyStr.slice(0, 500),
       content_type: response.headers['content-type'] || null,
       response_size_bytes: Buffer.byteLength(bodyStr, 'utf-8'),
       error: null,

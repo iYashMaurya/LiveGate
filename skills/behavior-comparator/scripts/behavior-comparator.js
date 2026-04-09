@@ -39,7 +39,75 @@ function classifyAnomaly(probeId, field, baselineVal, currentVal) {
   return null;
 }
 
-function main() {
+async function enrichHashAnomalies(anomalies, probeResults, baseline) {
+  if (!process.env.ANTHROPIC_API_KEY) return anomalies;
+
+  const hashAnomalies = anomalies.filter(a => a.type === 'response_body_change');
+  if (hashAnomalies.length === 0) return anomalies;
+
+  const enriched = [...anomalies];
+
+  for (const anomaly of hashAnomalies) {
+    const result = (probeResults.results || []).find(r => r.probe_id === anomaly.probe_id);
+    const base = baseline[anomaly.probe_id];
+    if (!result?.response_body_preview || !base?.response_body_preview) continue;
+
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 500,
+          system: 'You compare API responses. Return ONLY valid JSON, no markdown.',
+          messages: [{
+            role: 'user',
+            content: `Compare these two API responses for probe ${anomaly.probe_id}.
+
+BASELINE (before deploy):
+${base.response_body_preview}
+
+CURRENT (after deploy):
+${result.response_body_preview}
+
+Return JSON:
+{
+  "semantic_change": "one sentence describing what actually changed in the data",
+  "is_regression": true/false,
+  "regression_reason": "why this is a regression, or null if not a regression"
+}`,
+          }],
+        }),
+      });
+
+      const data = await response.json();
+      const parsed = JSON.parse(data.content[0].text.trim().replace(/```json|```/g, ''));
+
+      const idx = enriched.findIndex(a => a.probe_id === anomaly.probe_id && a.type === anomaly.type);
+      if (idx !== -1) {
+        enriched[idx] = {
+          ...anomaly,
+          semantic_change: parsed.semantic_change,
+          is_regression: parsed.is_regression,
+          regression_reason: parsed.regression_reason,
+          detail: `${anomaly.detail} | AI: ${parsed.semantic_change}`,
+        };
+      }
+
+      process.stderr.write(`[comparator] AI enriched ${anomaly.probe_id}: ${parsed.semantic_change}\n`);
+    } catch (err) {
+      process.stderr.write(`[comparator] AI enrichment failed for ${anomaly.probe_id}: ${err.message}\n`);
+    }
+  }
+
+  return enriched;
+}
+
+async function main() {
   try {
     const outputDir = 'memory/runtime';
     if (!existsSync(outputDir)) {
@@ -97,9 +165,12 @@ function main() {
       }
     }
 
+    // Enrich hash anomalies with AI semantic comparison
+    const enrichedAnomalies = await enrichHashAnomalies(anomalies, probeResults, baseline);
+
     // Compute confidence score
     const summary = { critical: 0, high: 0, medium: 0, low: 0 };
-    for (const a of anomalies) {
+    for (const a of enrichedAnomalies) {
       const sev = a.severity.toLowerCase();
       summary[sev] = (summary[sev] || 0) + 1;
     }
@@ -115,7 +186,7 @@ function main() {
       probes_compared: (probeResults.results || []).length,
       new_baseline_entries: newBaselines.length,
       confidence_score: confidenceScore,
-      anomalies,
+      anomalies: enrichedAnomalies,
       summary,
     };
 

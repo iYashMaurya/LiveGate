@@ -100,6 +100,30 @@ That's not a feature — that's **Segregation of Duties**, enforced in code.
 
 ---
 
+## 🧠 How AI Is Used
+
+Four surgical Claude calls. Each one has a fallback. The pipeline works without an API key.
+
+```
+diff-reader       → Claude reads the full diff semantically, extracts routes
+                    and risk levels that regex misses. Falls back to regex.
+
+probe-generator   → Claude generates 3-5 edge-case probes targeting the specific
+                    change (boundary values, null inputs, the exact param that
+                    changed). Falls back to traffic-only probes.
+
+behavior-comparator → Claude explains what changed in response bodies — not just
+                      "hash mismatch" but "response now returns an empty array
+                      instead of 3 orders." Falls back to hash comparison.
+
+verdict-writer    → Claude writes the PR comment with specific, actionable
+                    language. Falls back to template-based comment.
+```
+
+> **The GO/NO-GO/ESCALATE verdict itself is deterministic (not AI-generated)** because you don't want a probabilistic model as a deployment gate. AI is used where explanation and creativity help — not where reliability is critical.
+
+---
+
 ## 🛠 Tech Stack
 
 ```

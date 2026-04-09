@@ -99,6 +99,56 @@ function parseDiff(diffContent) {
   return files;
 }
 
+async function enhanceWithClaude(rawDiff, candidateRoutes) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: 'You are a code change analyzer. Read a git diff and return ONLY valid JSON, no markdown, no explanation.',
+        messages: [{
+          role: 'user',
+          content: `Analyze this git diff and return JSON with this exact shape:
+{
+  "affected_routes": [
+    { "method": "GET", "path": "/api/orders", "risk_level": "high", "change_summary": "Added priority filter that bypasses cache" }
+  ],
+  "overall_risk": "high",
+  "change_description": "2-sentence plain English summary of what changed and why it matters for deployment"
+}
+
+Risk levels: "critical" (auth/security changes), "high" (data mutations, query logic), "medium" (new params, validation), "low" (logging, comments).
+
+Diff:
+\`\`\`
+${rawDiff.slice(0, 8000)}
+\`\`\`
+
+Seed routes already detected by regex (may be incomplete): ${JSON.stringify(candidateRoutes)}
+
+Return ONLY the JSON object.`,
+        }],
+      }),
+    });
+
+    const data = await response.json();
+    const text = data.content[0].text.trim();
+    return JSON.parse(text.replace(/```json|```/g, '').trim());
+  } catch (err) {
+    process.stderr.write(`[diff-reader] Claude enhancement failed: ${err.message}, using regex results\n`);
+    return null;
+  }
+}
+
 function computeOverallRisk(files) {
   const levels = ['critical', 'high', 'medium', 'low'];
   for (const level of levels) {
@@ -135,7 +185,7 @@ async function main() {
     }
 
     const files = parseDiff(diffContent);
-    const allRoutes = files.flatMap(f =>
+    const regexRoutes = files.flatMap(f =>
       f.affected_routes.map(r => ({
         method: r.split(' ')[0],
         path: r.split(' ').slice(1).join(' '),
@@ -145,14 +195,49 @@ async function main() {
       }))
     );
     const allDbOps = files.flatMap(f => f.affected_db_operations);
-    const probeTargets = [...new Set(files.flatMap(f => f.affected_routes))];
+    const regexTargets = [...new Set(files.flatMap(f => f.affected_routes))];
+
+    // Enhance with Claude if API key is available
+    const claudeResult = await enhanceWithClaude(diffContent, regexTargets);
+
+    let allRoutes = regexRoutes;
+    let overallRisk = computeOverallRisk(files);
+    let changeDescription = `${files.length} file(s) changed`;
+    let probeTargets = regexTargets;
+
+    if (claudeResult) {
+      process.stderr.write(`[diff-reader] Claude enhanced: ${claudeResult.affected_routes?.length || 0} routes, risk=${claudeResult.overall_risk}\n`);
+
+      // Merge Claude routes with regex routes (deduplicate by method+path)
+      const seen = new Set(regexRoutes.map(r => `${r.method} ${r.path}`));
+      const claudeRoutes = (claudeResult.affected_routes || []).map(r => ({
+        method: r.method,
+        path: r.path,
+        file: regexRoutes.find(rr => rr.path === r.path)?.file || 'unknown',
+        risk_level: r.risk_level || 'medium',
+        risk_reason: r.change_summary || 'Identified by AI analysis',
+      }));
+
+      for (const cr of claudeRoutes) {
+        const key = `${cr.method} ${cr.path}`;
+        if (!seen.has(key)) {
+          allRoutes.push(cr);
+          seen.add(key);
+        }
+      }
+
+      probeTargets = [...new Set(allRoutes.map(r => `${r.method} ${r.path}`))];
+      overallRisk = claudeResult.overall_risk || overallRisk;
+      changeDescription = claudeResult.change_description || changeDescription;
+    }
 
     const output = {
-      diff_summary: `${files.length} file(s) changed`,
+      diff_summary: changeDescription,
       changed_files: files.length,
       affected_routes: allRoutes,
       affected_db_operations: [...new Set(allDbOps)],
-      overall_risk: computeOverallRisk(files),
+      overall_risk: overallRisk,
+      change_description: changeDescription,
       probe_targets: probeTargets,
     };
 
