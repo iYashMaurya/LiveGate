@@ -1,6 +1,6 @@
 # LiveGate Demo
 
-## Run This First
+## Option A: Quick local demo (no Docker needed)
 
 ```bash
 # 1. Install all dependencies
@@ -10,7 +10,21 @@ npm install && cd demo/sample-app && npm install && cd ../..
 bash demo/run-demo.sh
 ```
 
-That's it. The demo script handles everything: starts the staging server, runs LiveGate twice (normal + regression), and shows both verdicts.
+Uses nginx log files as the traffic source. No infrastructure required.
+
+## Option B: Docker demo (Jaeger + OTel traces)
+
+```bash
+# 1. Install LiveGate dependencies (host-side)
+npm install
+
+# 2. Run the full Docker demo (one command)
+bash demo/docker-demo.sh
+```
+
+This starts Jaeger + OTel-instrumented demo app in Docker, generates real traffic so Jaeger has traces, then runs LiveGate against the live staging environment. After the demo, it leaves Jaeger UI running at http://localhost:16686 so you can explore the traces.
+
+**Requirements:** Docker Desktop running.
 
 ---
 

@@ -1,0 +1,50 @@
+services:
+  # ─── Jaeger: trace backend ─────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"   # Jaeger UI + API
+      - "14268:14268"   # Jaeger HTTP collector
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # ─── Demo app: Express API with OTel instrumentation ───────
+  demo-app:
+    build: ./demo/sample-app
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_SERVICE_NAME=livegate-demo-app
+    depends_on:
+      jaeger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # ─── Demo app with simulated regression ────────────────────
+  demo-app-slow:
+    build: ./demo/sample-app
+    ports:
+      - "3002:3001"
+    environment:
+      - PORT=3001
+      - SIMULATE_SLOW=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_SERVICE_NAME=livegate-demo-app-slow
+    depends_on:
+      jaeger:
+        condition: service_healthy
+    profiles:
+      - regression
