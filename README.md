@@ -100,27 +100,46 @@ That's not a feature — that's **Segregation of Duties**, enforced in code.
 
 ---
 
-## � Powered by Lyzr Studio
+## 🤖 Powered by Lyzr Studio (Required)
 
-All AI inference in LiveGate routes through **Lyzr Studio** — not directly to a model provider.
-This gives LiveGate full observability, audit logging, and responsible AI enforcement on every call.
+Lyzr Studio is not optional. It **is** the intelligence layer.
 
-| Skill | What Lyzr Does |
-|-------|---------------|
-| `diff-reader` | Semantically understands what changed — routes, risk levels, plain-English summary |
-| `probe-generator` | Generates edge-case probes targeting the specific change, not just replaying logs |
-| `behavior-comparator` | Explains body changes in plain English ("orders now return empty array") |
-| `verdict-writer` | Writes a specific, actionable PR comment — not a template |
+Without Lyzr, LiveGate refuses to start. Every AI call in the pipeline routes through
+a single Lyzr agent with a **shared session** — meaning the diff analysis context is
+available when the verdict is written. It's one agent reasoning across the whole pipeline.
 
-The GO/NO-GO verdict itself is **deterministic** (not AI-generated).
-You don't want a probabilistic model blocking your production deploys.
-Lyzr is used where explanation and reasoning help — not where reliability is critical.
+```
+diff-reader       → Lyzr reads the diff semantically
+                    "Added priority filter using >= instead of === on string field"
 
-### Quick Setup
-1. Create a Lyzr account at [studio.lyzr.ai](https://studio.lyzr.ai)
-2. Follow `lyzr/README.md` to create the LiveGate agent (5 min)
-3. Add `LYZR_API_KEY` and `LYZR_AGENT_ID` to `.env`
-4. Run `bash demo/run-demo.sh` — Lyzr analysis is automatic
+probe-generator   → Lyzr generates edge-case probes for the specific change
+                    "Test ?priority= (empty), ?priority=9 (string comparison edge)"
+
+comparator        → Lyzr explains every anomaly in plain English
+                    "Orders endpoint returns wrong results because >= on strings
+                     doesn't match intended numeric priority ordering"
+
+verdict-writer    → Lyzr writes a specific, actionable PR comment
+                    "Fix: change o.priority >= req.query.priority to
+                     o.priority >= Number(req.query.priority)"
+```
+
+The GO/NO-GO/ESCALATE verdict itself is **deterministic** (not AI-generated).
+You don't want a probabilistic model deciding whether to block your deploy.
+Lyzr is used where understanding and explanation matter — not where reliability is critical.
+
+All calls are logged in the [Lyzr Studio dashboard](https://studio.lyzr.ai) with full
+session history, token usage, and inference traces.
+
+### Setup (5 min)
+1. Go to [studio.lyzr.ai](https://studio.lyzr.ai) and create an account
+2. Create a **Single Agent** named `LiveGate` (see `lyzr/README.md` for exact config)
+3. Copy your API key + agent ID into `.env`:
+   ```
+   LYZR_API_KEY=sk-...
+   LYZR_AGENT_ID=69d80...
+   ```
+4. Run `bash demo/run-demo.sh`
 
 ---
 
@@ -132,7 +151,7 @@ Sub-agents (2)   ██████████  probe-executor (prober), verdic
 Standard         ██████████  gitagent spec v0.1.0 + gitclaw runtime
 Trace backend    █████████░  OpenTelemetry / Jaeger (primary), nginx logs (fallback)
 CI/CD            ██████████  GitHub Actions, PR comments, merge blocking
-Model            █████████░  claude-sonnet-4-6 (verdict) + claude-haiku-4-5 (probes)
+AI inference    ██████████  Lyzr Studio → claude-sonnet-4-6 (mandatory, shared session)
 Guilt            █░░░░░░░░░  Minimal. Tests are finally honest.
 ```
 
@@ -199,18 +218,24 @@ livegate/
 
 ## 🚀 Run It
 
-### Option A: 30-second demo (nginx logs, no infra needed)
+### Option A: Full demo (requires Lyzr API key)
 
 ```bash
 git clone https://github.com/iYashMaurya/livegate.git
 cd livegate
 npm install && cd demo/sample-app && npm install && cd ../..
+cp .env.example .env
+# Edit .env → add your LYZR_API_KEY and LYZR_AGENT_ID
 bash demo/run-demo.sh
 ```
 
-You'll see LiveGate run twice:
-- **Run 1**: normal staging → `GO ✓` 
-- **Run 2**: simulated latency regression → `ESCALATE ⚠` 
+You'll see LiveGate run three times:
+- **Run 1**: normal staging → `GO ✓`
+- **Run 2**: simulated latency regression (800ms) → `ESCALATE ⚠`
+- **Run 3**: priority filter bug (BUG_MODE) → `ESCALATE ⚠` or `NO-GO ✗`
+
+Lyzr analyzes the diff, generates targeted edge-case probes, and writes a specific
+PR comment explaining exactly what's wrong and how to fix it. 
 
 ### Option B: Full production setup (OTel traces + Jaeger)
 
@@ -231,35 +256,31 @@ node runtime/index.js \
 ### Option C: On your actual CI (GitHub Actions)
 
 Add `.github/workflows/livegate.yml` to your repo.  
-Set `STAGING_BASE_URL` and `ANTHROPIC_API_KEY` in secrets.  
+Set `LYZR_API_KEY`, `LYZR_AGENT_ID`, and `STAGING_BASE_URL` in secrets.  
 Every PR now gets a deployment verdict. That's it.
 
 ---
 
-## 📊 What a Verdict Looks Like on a PR
+## 📊 What a Verdict Looks Like (Real Output)
 
-```markdown
-## LiveGate Deployment Report ✓
+This is an actual verdict from LiveGate with Lyzr Studio (not a template):
 
-**Verdict: GO ✓**
-**Confidence:** 0.92 | **Probes fired:** 47 | **Anomalies:** 1 LOW
+> ⚠️ **Deployment escalated for human review — static code risk not cleared by runtime probes alone.**
+>
+> All 19 probes returned expected status codes and no runtime anomalies were detected.
+> However, the priority filter added to `GET /api/orders` uses `o.priority >= req.query.priority`
+> — a direct comparison between a numeric field and a raw query string — which means
+> `GET /api/orders?priority=9` may silently return wrong results: orders with numeric
+> priority 10 will be excluded because `'10' >= '9'` is `false` under JavaScript string
+> comparison, even though 10 > 9 numerically.
+>
+> **Action required:** Change `o.priority >= req.query.priority` to
+> `o.priority >= Number(req.query.priority)` and add a guard to reject non-numeric values.
+>
+> *Powered by Lyzr Studio | 19 probes | gitagent v0.1.0*
 
-### What was tested
-Probes derived from 47 real traffic patterns — last 24h of logs.
-Affected routes: GET /api/orders, POST /api/orders
-
-### Findings
-| Severity | Count | Top finding |
-|----------|-------|-------------|
-| LOW      | 1     | Latency: 145ms → 162ms (+12%) on GET /api/orders |
-
-### Recommendation
-Safe to deploy. +12% latency within threshold. No status regressions
-across 47 real traffic patterns. Baseline updated.
-
----
-*LiveGate v0.1.0 | gitagent standard | 47 probes from real traffic*
-```
+Lyzr didn't just say "body changed." It read the diff, understood the `>=` bug,
+and told the developer exactly what to fix.
 
 ---
 
@@ -321,15 +342,15 @@ OTel solves all four. LiveGate uses traces when Jaeger is available, falls back 
 ## Built With
 
 ```
+Lyzr Studio     AI inference platform (REQUIRED — all reasoning routes through here)
 gitagent        open standard for AI agents in git repos (spec v0.1.0)
 gitclaw         gitagent runtime engine
-Claude          claude-sonnet-4-6 (verdict) + claude-haiku-4-5 (probes)
+Claude          claude-sonnet-4-6 via Lyzr Studio
 Node.js 20      runtime
 OpenTelemetry   trace instrumentation + OTLP export
 Jaeger          distributed trace backend (docker, free, local)
 Express         demo staging server
 axios           HTTP probe client
-Lyzr Studio     managed agent hosting (optional)
 ```
 
 ---
