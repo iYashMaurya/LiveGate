@@ -10,3 +10,4 @@ memory/archive/
 !memory/MEMORY.md
 !memory/runtime/baseline.json
 !memory/runtime/deployments.md
+repomix-output.xml
