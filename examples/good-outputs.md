@@ -6,22 +6,32 @@
 
 **Expected LiveGate output**:
 
-```json
-{
-  "verdict": "GO",
-  "confidence": 0.95,
-  "timestamp": "2025-04-09T14:30:00Z",
-  "anomaly_counts": {
-    "critical": 0,
-    "high": 0,
-    "medium": 1,
-    "low": 3
-  },
-  "pr_comment_markdown": "## LiveGate Deployment Report ✓\n\n**Verdict: GO ✓**\n**Confidence:** 0.95 | **Probes fired:** 312 | **Anomalies:** 4\n\n### What was tested\nProbes derived from 312 real traffic patterns from the last 24h of logs.\nAffected routes: GET /api/orders, GET /api/orders/:id\n\n### Findings\n\n| Severity | Count | Top finding |\n|----------|-------|-------------|\n| CRITICAL | 0     | —           |\n| HIGH     | 0     | —           |\n| MEDIUM   | 1     | Response body hash changed (new 'priority' field) |\n\n### Recommendation\nAll 312 probes passed within acceptable thresholds. The medium anomaly is the expected response body change from adding the priority field. Safe to deploy.\n\n---\n*LiveGate v0.1.0 | Real-environment testing | 312 log patterns analyzed*"
-}
+```markdown
+## LiveGate Deployment Report ✓
+
+**Verdict: GO ✓**
+**Confidence:** 0.92 | **Probes fired:** 312 | **Anomalies:** 2 (LOW)
+
+### What was tested
+Probes derived from 312 real traffic patterns from the last 24h of logs.
+Affected routes: GET /api/orders, POST /api/orders
+
+### Findings
+
+| Severity | Count | Top finding |
+|----------|-------|-------------|
+| LOW      | 2     | Minor latency increase: 145ms → 162ms on GET /api/orders (+12%) |
+
+### Recommendation
+Safe to deploy. The 12% latency increase on GET /api/orders is within
+acceptable bounds (under 50% threshold). No status code regressions detected
+across 312 real traffic patterns.
+
+---
+*LiveGate v0.1.0 | Real-environment testing | 312 log patterns analyzed*
 ```
 
-**Why this is good**: High confidence, many probes from real traffic, the only anomaly is the expected change from the diff.
+**Why this is good**: High confidence, many probes from real traffic, specific latency delta cited with percentage, clear threshold reasoning.
 
 ---
 
