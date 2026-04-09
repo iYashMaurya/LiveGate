@@ -41,28 +41,36 @@ function parseDiff(diffContent) {
     const filePath = fileMatch[2];
     const addedLines = [];
     const removedLines = [];
+    const contextLines = [];
+    const hunkHeaders = [];
 
     for (const line of chunk.split('\n')) {
       if (line.startsWith('+') && !line.startsWith('+++')) addedLines.push(line.slice(1));
-      if (line.startsWith('-') && !line.startsWith('---')) removedLines.push(line.slice(1));
+      else if (line.startsWith('-') && !line.startsWith('---')) removedLines.push(line.slice(1));
+      else if (line.startsWith(' ')) contextLines.push(line.slice(1));
+      else if (line.startsWith('@@')) hunkHeaders.push(line);
     }
 
     const allChanged = [...addedLines, ...removedLines].join('\n');
+    const allContext = [...contextLines, ...hunkHeaders].join('\n');
     const isNew = chunk.includes('new file mode');
     const isDeleted = chunk.includes('deleted file mode');
 
     const changeType = isNew ? 'added' : isDeleted ? 'deleted' : 'modified';
 
     const routes = [];
-    for (const pattern of ROUTE_PATTERNS) {
-      pattern.lastIndex = 0;
-      let match;
-      while ((match = pattern.exec(allChanged)) !== null) {
-        const groups = match.slice(1);
-        const method = groups.find(g => /^(get|post|put|patch|delete)$/i.test(g));
-        const path = groups.find(g => g && g.startsWith('/'));
-        if (method && path) {
-          routes.push(`${method.toUpperCase()} ${path}`);
+    // Scan changed lines AND context/hunk headers for route definitions
+    for (const source of [allChanged, allContext]) {
+      for (const pattern of ROUTE_PATTERNS) {
+        pattern.lastIndex = 0;
+        let match;
+        while ((match = pattern.exec(source)) !== null) {
+          const groups = match.slice(1);
+          const method = groups.find(g => /^(get|post|put|patch|delete)$/i.test(g));
+          const path = groups.find(g => g && g.startsWith('/'));
+          if (method && path) {
+            routes.push(`${method.toUpperCase()} ${path}`);
+          }
         }
       }
     }

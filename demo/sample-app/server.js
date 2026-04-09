@@ -16,7 +16,7 @@ let nextId = 2000;
 
 // GET /api/orders
 app.get('/api/orders', async (req, res) => {
-  const delay = SIMULATE_SLOW ? 450 : 120;
+  const delay = SIMULATE_SLOW ? 800 : 120;
   await new Promise(r => setTimeout(r, delay));
 
   let result = [...fakeOrders];
