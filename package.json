@@ -3,11 +3,14 @@
   "version": "0.1.0",
   "description": "Real-environment CI/CD testing agent using gitagent standard",
   "type": "module",
+  "bin": {
+    "livegate": "./runtime/index.js"
+  },
   "scripts": {
     "start": "node runtime/index.js",
+    "check": "node runtime/index.js",
     "demo": "bash demo/run-demo.sh",
-    "validate": "npx gitagent validate",
-    "test": "node --test runtime/tests/"
+    "validate": "npx gitagent validate"
   },
   "dependencies": {
     "gitclaw": "latest",

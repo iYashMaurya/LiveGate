@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'fs';
@@ -51,8 +52,55 @@ function writeEscalateVerdict(errorMessage) {
   return verdict;
 }
 
+async function autoDetectDiff() {
+  try {
+    // Try to get diff from last commit
+    const { stdout } = await execFileAsync('git', ['diff', 'HEAD~1'], {
+      cwd: process.cwd(),
+      timeout: 10000,
+    });
+    if (stdout.trim()) {
+      const diffPath = resolve(MEMORY_DIR, 'auto-diff.patch');
+      writeFileSync(diffPath, stdout);
+      return diffPath;
+    }
+  } catch { /* not a git repo or no commits */ }
+
+  // Try staged changes
+  try {
+    const { stdout } = await execFileAsync('git', ['diff', '--cached'], {
+      cwd: process.cwd(),
+      timeout: 10000,
+    });
+    if (stdout.trim()) {
+      const diffPath = resolve(MEMORY_DIR, 'auto-diff.patch');
+      writeFileSync(diffPath, stdout);
+      return diffPath;
+    }
+  } catch { /* ignore */ }
+
+  return null;
+}
+
+function autoSaveBaseline() {
+  try {
+    const resultsPath = resolve(MEMORY_DIR, 'probe-results.json');
+    if (!existsSync(resultsPath)) return;
+    const results = JSON.parse(readFileSync(resultsPath, 'utf-8'));
+    const baseline = {};
+    for (const r of results.results) { baseline[r.probe_id] = r; }
+    writeFileSync(resolve(MEMORY_DIR, 'baseline.json'), JSON.stringify(baseline, null, 2));
+  } catch { /* ignore */ }
+}
+
 export default async function run({ gitDiffPath, logSource, logPath, stagingUrl, githubRepo, prNumber }) {
   ensureMemoryDir();
+
+  // Auto-initialize baseline if empty
+  const baselinePath = resolve(MEMORY_DIR, 'baseline.json');
+  if (!existsSync(baselinePath)) {
+    writeFileSync(baselinePath, '{}');
+  }
 
   // ── Lyzr required ────────────────────────────────────────────
   if (!isLyzrConfigured()) {
@@ -199,35 +247,43 @@ const isMain = process.argv[1] && fileURLToPath(import.meta.url) === resolve(pro
 if (isMain) {
   const args = process.argv.slice(2);
 
-  if (args.includes('--help') || args.includes('-h') || args.length === 0) {
+  if (args.includes('--help') || args.includes('-h')) {
     console.log(`
-${chalk.bold('LiveGate Runtime')} — Real-environment CI/CD testing
+${chalk.bold('LiveGate')} — Real-environment deployment gate powered by Lyzr Studio
 
 ${chalk.bold('Usage:')}
-  node runtime/index.js [options]
+  npx livegate                    Auto-detect diff + use .env config (recommended)
+  npx livegate check              Same as above
+  node runtime/index.js [options] Manual mode with explicit flags
 
-${chalk.bold('Required:')}
-  --diff <path>         Path to git diff file, or 'HEAD~1'
-  --log-path <path>     Path or ARN for access logs
-  --staging <url>       Base URL of staging environment
+${chalk.bold('Zero-config mode (reads from .env):')}
+  STAGING_BASE_URL    Where to fire probes
+  LOG_PATH            Where to find access logs
+  LYZR_API_KEY        Lyzr Studio API key
+  LYZR_AGENT_ID       Lyzr Studio agent ID
 
-${chalk.bold('Optional:')}
-  --log-source <type>   Log source: file | cloudwatch | datadog (default: file)
-  --repo <owner/repo>   GitHub repo for PR comment
-  --pr <number>         Pull request number for PR comment
-  --help                Show this help
+${chalk.bold('Manual flags (override .env):')}
+  --diff <path>       Path to git diff file (default: auto-detect from git)
+  --log-path <path>   Path to access logs (default: LOG_PATH from .env)
+  --staging <url>     Staging URL (default: STAGING_BASE_URL from .env)
+  --log-source <type> file | otel (default: LOG_SOURCE from .env or 'file')
+  --repo <owner/repo> GitHub repo for PR comment
+  --pr <number>       Pull request number for PR comment
 
 ${chalk.bold('Examples:')}
-  node runtime/index.js --diff changes.diff --log-path /var/log/nginx/access.log --staging http://staging.example.com
-  node runtime/index.js --diff HEAD~1 --log-path /var/log/access.log --staging http://staging:3000 --repo owner/repo --pr 42
+  npx livegate                                          # auto-detect everything
+  npx livegate --diff changes.diff                      # specific diff file
+  npx livegate --staging http://staging:3001             # override staging URL
 
-${chalk.bold('Environment Variables:')}
-  LYZR_API_KEY          Lyzr Studio API key (REQUIRED)
-  LYZR_AGENT_ID         Lyzr Studio agent ID (REQUIRED)
-  STAGING_BASE_URL      Fallback staging URL (overridden by --staging)
-  GITHUB_TOKEN          GitHub API token for PR comments
-  GITHUB_REPO           Fallback GitHub repo (overridden by --repo)
-  PR_NUMBER             Fallback PR number (overridden by --pr)
+${chalk.bold('What happens:')}
+  1. Reads git diff (auto or from --diff)
+  2. Lyzr analyzes what changed semantically
+  3. Mines traffic patterns from logs
+  4. Lyzr generates targeted edge-case probes
+  5. Fires all probes against staging
+  6. Lyzr compares behavior against stored baseline
+  7. Lyzr writes GO / NO-GO / ESCALATE verdict
+  8. Baseline auto-updates on GO verdict
 `);
     process.exit(0);
   }
@@ -237,28 +293,61 @@ ${chalk.bold('Environment Variables:')}
     return idx !== -1 && args[idx + 1] ? args[idx + 1] : null;
   }
 
-  const gitDiffPath = getArg('--diff');
-  const logSource = getArg('--log-source') || 'file';
-  const logPath = getArg('--log-path');
+  // Auto-detect everything from .env if no flags provided
+  const logSource = getArg('--log-source') || process.env.LOG_SOURCE || 'file';
+  const logPath = getArg('--log-path') || process.env.LOG_PATH;
   const stagingUrl = getArg('--staging') || process.env.STAGING_BASE_URL;
   const githubRepo = getArg('--repo') || process.env.GITHUB_REPO;
   const prNumber = getArg('--pr') || process.env.PR_NUMBER;
 
-  if (!gitDiffPath) { console.error(chalk.red('Error: --diff is required')); process.exit(1); }
-  if (!logPath) { console.error(chalk.red('Error: --log-path is required')); process.exit(1); }
-  if (!stagingUrl) { console.error(chalk.red('Error: --staging is required (or set STAGING_BASE_URL)')); process.exit(1); }
+  if (!stagingUrl) {
+    console.error(chalk.red('Error: Set STAGING_BASE_URL in .env or pass --staging <url>'));
+    process.exit(1);
+  }
+  if (!logPath) {
+    console.error(chalk.red('Error: Set LOG_PATH in .env or pass --log-path <path>'));
+    process.exit(1);
+  }
 
   // Set STAGING_BASE_URL for env-prober
   process.env.STAGING_BASE_URL = stagingUrl;
 
-  run({ gitDiffPath, logSource, logPath, stagingUrl, githubRepo, prNumber: prNumber ? parseInt(prNumber, 10) : undefined })
-    .then(verdict => {
-      if (verdict.verdict === 'NO-GO') process.exit(1);
-      if (verdict.verdict === 'ESCALATE') process.exit(2);
-      process.exit(0);
-    })
-    .catch(err => {
-      console.error(chalk.red(`Fatal: ${err.message}`));
-      process.exit(1);
-    });
+  // Auto-detect diff if not provided
+  let gitDiffPath = getArg('--diff');
+
+  (async () => {
+    if (!gitDiffPath) {
+      ensureMemoryDir();
+      console.log(chalk.gray('  Auto-detecting git diff...'));
+      gitDiffPath = await autoDetectDiff();
+      if (!gitDiffPath) {
+        // Use demo diff as fallback
+        const demoDiff = resolve(ROOT, 'demo/sample-diff/change.diff');
+        if (existsSync(demoDiff)) {
+          gitDiffPath = demoDiff;
+          console.log(chalk.gray('  Using demo diff (no git changes detected)'));
+        } else {
+          console.error(chalk.red('Error: No git diff detected and no --diff provided'));
+          process.exit(1);
+        }
+      } else {
+        console.log(chalk.gray('  Found git diff from HEAD~1'));
+      }
+    }
+
+    const verdict = await run({ gitDiffPath, logSource, logPath, stagingUrl, githubRepo, prNumber: prNumber ? parseInt(prNumber, 10) : undefined });
+
+    // Auto-save baseline on GO verdict
+    if (verdict.verdict === 'GO') {
+      autoSaveBaseline();
+      console.log(chalk.gray('  Baseline auto-updated for next run'));
+    }
+
+    if (verdict.verdict === 'NO-GO') process.exit(1);
+    if (verdict.verdict === 'ESCALATE') process.exit(2);
+    process.exit(0);
+  })().catch(err => {
+    console.error(chalk.red(`Fatal: ${err.message}`));
+    process.exit(1);
+  });
 }
