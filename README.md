@@ -280,6 +280,8 @@ This is an actual verdict from LiveGate with Lyzr Studio (not a template):
 Lyzr didn't just say "body changed." It read the diff, understood the `>=` bug,
 and told the developer exactly what to fix.
 
+**See it live:** [PR #1 with automated verdict](https://github.com/iYashMaurya/LiveGate/pull/1)
+
 ---
 
 ## Why OTel, Not Just Nginx Logs
@@ -318,9 +320,12 @@ OTel solves all four. LiveGate uses traces when Jaeger is available, falls back 
 | `LYZR_API_KEY` | Yes | Lyzr Studio API key (from studio.lyzr.ai) |
 | `LYZR_AGENT_ID` | Yes | Lyzr Studio agent ID (after creating the LiveGate agent) |
 | `STAGING_BASE_URL` | Yes | Your real staging environment |
-| `LOG_SOURCE` | No | `otel` (production) or `file` (demo). Default: `file` |
-| `LOG_PATH` | No | Nginx log path (file mode fallback) |
-| `JAEGER_URL` | No | Jaeger HTTP API. Default: `http://localhost:16686` |
+| `LOG_SOURCE` | No | `file`, `otel`, `datadog`, or `cloudwatch`. Default: `file` |
+| `LOG_PATH` | No | Nginx log path (file mode) |
+| `JAEGER_URL` | No | Jaeger HTTP API (otel mode). Default: `http://localhost:16686` |
+| `DD_API_KEY` | No | Datadog API key (datadog mode) |
+| `DD_APP_KEY` | No | Datadog Application key (datadog mode) |
+| `CW_LOG_GROUP` | No | CloudWatch log group (cloudwatch mode) |
 | `GITHUB_TOKEN` | No | PR comments |
 | `GITHUB_REPO` | No | GitHub repo in `owner/repo` format |
 | `PR_NUMBER` | No | Pull request number |
@@ -329,10 +334,13 @@ OTel solves all four. LiveGate uses traces when Jaeger is available, falls back 
 
 ## 🗺 What's Next
 
+- [x] **Datadog + CloudWatch adapters** — read logs from Datadog Log Analytics and AWS CloudWatch Insights
+- [x] **Multi-service OTel** — discovers all services in Jaeger, mines traces across up to 10 services
+- [x] **Stable probe IDs** — hash-based IDs so baselines work across runs
+- [x] **Chunked diff analysis** — handles large PRs by analyzing each file separately
 - [ ] **Playwright session recording** — replay full browser sessions, not just HTTP calls
-- [ ] **Datadog + Honeycomb adapters** — read traces from wherever you already have them
+- [ ] **Honeycomb adapter** — read traces from Honeycomb
 - [ ] **Schema drift detection** — alert when response shapes change across deploys
-- [ ] **Multi-service graphs** — probe downstream dependencies, not just the changed service
 - [ ] **Baseline aging** — automatically flag baselines older than N days as stale
 
 ---
