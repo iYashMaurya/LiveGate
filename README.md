@@ -202,9 +202,7 @@ livegate/
 ├── knowledge/
 │   └── real-env-testing-guide.md
 ├── examples/                   # good-outputs.md, bad-outputs.md
-├── compliance/                 # regulatory-map, risk-assessment, validation-schedule
-├── config/                     # default.yaml
-├── lyzr/                       # Lyzr Studio integration + adapter
+├── lyzr/                       # Lyzr Studio adapter + agent config + setup guide
 ├── demo/
 │   ├── sample-app/             # Express API + Dockerfile + OTel instrumentation
 │   ├── sample-logs/            # 500-line nginx access.log
