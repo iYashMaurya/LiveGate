@@ -334,6 +334,249 @@ async function mineFromFile(logPath, probeTargets) {
   };
 }
 
+// ─── MODE C: Datadog Log Analytics API ───────────────────────
+
+async function mineFromDatadog(probeTargets) {
+  const apiKey = process.env.DD_API_KEY;
+  const appKey = process.env.DD_APP_KEY;
+  const site = process.env.DD_SITE || 'datadoghq.com';
+
+  if (!apiKey || !appKey) {
+    throw new Error('Datadog requires DD_API_KEY and DD_APP_KEY env vars');
+  }
+
+  process.stderr.write(`[datadog] Querying logs from ${site}...\n`);
+
+  const now = Date.now();
+  const oneHourAgo = now - 3600000;
+  const groups = new Map();
+  let totalLogs = 0;
+
+  // Query for each probe target route
+  for (const target of probeTargets) {
+    const [method, ...pathParts] = target.split(' ');
+    const path = pathParts.join(' ');
+
+    const query = `@http.method:${method} @http.url_details.path:${path}*`;
+    try {
+      const resp = await axios.post(`https://api.${site}/api/v2/logs/events/search`, {
+        filter: { query, from: new Date(oneHourAgo).toISOString(), to: new Date(now).toISOString() },
+        sort: '-timestamp',
+        page: { limit: 500 },
+      }, {
+        headers: {
+          'DD-API-KEY': apiKey,
+          'DD-APPLICATION-KEY': appKey,
+          'Content-Type': 'application/json',
+        },
+        timeout: 15000,
+      });
+
+      const logs = resp.data?.data || [];
+      totalLogs += logs.length;
+
+      for (const log of logs) {
+        const attrs = log.attributes?.attributes || log.attributes || {};
+        const logMethod = attrs['http.method'] || method;
+        const logPath = attrs['http.url_details.path'] || path;
+        const status = parseInt(attrs['http.status_code'] || 200, 10);
+        const duration = parseFloat(attrs['duration'] || 0) / 1000000; // ns to ms
+
+        const key = `${logMethod} ${logPath}`;
+        if (!groups.has(key)) {
+          groups.set(key, { method: logMethod, path: logPath, count: 0, statuses: [], latencies: [], query_schemas: new Map() });
+        }
+        const g = groups.get(key);
+        g.count++;
+        g.statuses.push(status);
+        if (duration > 0) g.latencies.push(Math.round(duration));
+
+        const qp = attrs['http.url_details.queryString'] || {};
+        const schemaKey = JSON.stringify(Object.fromEntries(Object.keys(qp).map(k => [k, 'string'])));
+        g.query_schemas.set(schemaKey, (g.query_schemas.get(schemaKey) || 0) + 1);
+      }
+    } catch (err) {
+      process.stderr.write(`[datadog] Query failed for ${target}: ${err.message}\n`);
+    }
+  }
+
+  const sorted = [...groups.values()].sort((a, b) => b.count - a.count);
+  const patterns = sorted.map((g, index) => {
+    const topSchema = [...g.query_schemas.entries()].sort((a, b) => b[1] - a[1])[0];
+    const modeStatus = g.statuses.sort((a, b) => g.statuses.filter(v => v === b).length - g.statuses.filter(v => v === a).length)[0] || 200;
+    const avgLatency = g.latencies.length > 0 ? Math.round(g.latencies.reduce((a, b) => a + b, 0) / g.latencies.length) : null;
+
+    return {
+      method: g.method, path: g.path,
+      query_params: topSchema ? JSON.parse(topSchema[0]) : {},
+      request_body_schema: null,
+      frequency: g.count, frequency_rank: index + 1,
+      baseline_status: modeStatus, baseline_latency_ms: avgLatency,
+      source: 'datadog',
+    };
+  });
+
+  return { log_window: '1h', total_requests_analyzed: totalLogs, trace_source: 'datadog', patterns };
+}
+
+// ─── MODE D: AWS CloudWatch Logs Insights ────────────────────
+
+async function mineFromCloudWatch(probeTargets) {
+  const region = process.env.AWS_REGION || 'us-east-1';
+  const logGroup = process.env.CW_LOG_GROUP;
+
+  if (!logGroup) {
+    throw new Error('CloudWatch requires CW_LOG_GROUP env var');
+  }
+
+  process.stderr.write(`[cloudwatch] Querying ${logGroup} in ${region}...\n`);
+
+  // Use AWS SDK v3 via dynamic import (available in Node 18+)
+  let CWL;
+  try {
+    CWL = await import('@aws-sdk/client-cloudwatch-logs');
+  } catch {
+    throw new Error('CloudWatch adapter requires @aws-sdk/client-cloudwatch-logs. Run: npm install @aws-sdk/client-cloudwatch-logs');
+  }
+
+  const cwClient = new CWL.CloudWatchLogsClient({ region });
+
+  const now = Math.floor(Date.now() / 1000);
+  const oneHourAgo = now - 3600;
+
+  const query = `fields @timestamp, @message
+    | filter @message like /HTTP/
+    | parse @message '"* * HTTP/*" *' as method, path, proto, status
+    | stats count(*) as freq by method, path, status
+    | sort freq desc
+    | limit 200`;
+
+  const startCmd = new CWL.StartQueryCommand({
+    logGroupName: logGroup,
+    startTime: oneHourAgo,
+    endTime: now,
+    queryString: query,
+  });
+
+  const { queryId } = await cwClient.send(startCmd);
+  process.stderr.write(`[cloudwatch] Query started: ${queryId}\n`);
+
+  // Poll for results
+  let results = [];
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    const getCmd = new CWL.GetQueryResultsCommand({ queryId });
+    const resp = await cwClient.send(getCmd);
+    if (resp.status === 'Complete') {
+      results = resp.results || [];
+      break;
+    }
+  }
+
+  process.stderr.write(`[cloudwatch] Got ${results.length} result rows\n`);
+
+  const patterns = [];
+  let totalAnalyzed = 0;
+
+  for (const row of results) {
+    const fields = {};
+    for (const f of row) { fields[f.field] = f.value; }
+    const method = fields.method || 'GET';
+    const path = fields.path || '/';
+    const status = parseInt(fields.status || 200, 10);
+    const freq = parseInt(fields.freq || 1, 10);
+    totalAnalyzed += freq;
+
+    if (probeTargets.length > 0 && !matchesTarget(path, method, probeTargets)) continue;
+
+    patterns.push({
+      method, path,
+      query_params: {},
+      request_body_schema: null,
+      frequency: freq, frequency_rank: patterns.length + 1,
+      baseline_status: status, baseline_latency_ms: null,
+      source: 'cloudwatch',
+    });
+  }
+
+  return { log_window: '1h', total_requests_analyzed: totalAnalyzed, trace_source: 'cloudwatch', patterns };
+}
+
+// ─── MODE E: Multi-service OTel with service routing ─────────
+
+async function mineFromJaegerMultiService(jaegerUrl, probeTargets) {
+  process.stderr.write(`[otel-multi] Discovering services from ${jaegerUrl}...\n`);
+
+  const servicesResp = await axios.get(`${jaegerUrl}/api/services`, { timeout: 5000 });
+  const allServices = (servicesResp.data.data || []).filter(s => !s.includes('jaeger'));
+
+  if (allServices.length === 0) {
+    throw new Error('No services found in Jaeger');
+  }
+
+  process.stderr.write(`[otel-multi] Found ${allServices.length} services: ${allServices.join(', ')}\n`);
+
+  // Mine traces from ALL services, build a service → routes map
+  const serviceRouteMap = new Map(); // service → [patterns]
+  let totalTraces = 0;
+
+  for (const service of allServices.slice(0, 10)) {
+    try {
+      const tracesResp = await axios.get(`${jaegerUrl}/api/traces`, {
+        params: { service, limit: 50, lookback: '1h' },
+        timeout: 10000,
+      });
+      const traces = tracesResp.data.data || [];
+      totalTraces += traces.length;
+
+      for (const trace of traces) {
+        for (const span of (trace.spans || [])) {
+          const tags = {};
+          for (const tag of (span.tags || [])) { tags[tag.key] = tag.value; }
+          const method = tags['http.method'] || tags['http.request.method'];
+          const rawUrl = tags['http.url'] || tags['http.target'] || tags['http.route'];
+          if (!method || !rawUrl) continue;
+
+          let urlPath;
+          try { urlPath = new URL(rawUrl, 'http://d').pathname; } catch { urlPath = rawUrl.split('?')[0]; }
+
+          if (probeTargets.length > 0 && !matchesTarget(urlPath, method.toUpperCase(), probeTargets)) continue;
+
+          const key = `${service}:${method.toUpperCase()} ${urlPath}`;
+          if (!serviceRouteMap.has(key)) {
+            serviceRouteMap.set(key, {
+              service, method: method.toUpperCase(), path: urlPath,
+              count: 0, statuses: [], latencies: [],
+            });
+          }
+          const g = serviceRouteMap.get(key);
+          g.count++;
+          g.statuses.push(parseInt(tags['http.status_code'] || 200, 10));
+          g.latencies.push(Math.round((span.duration || 0) / 1000));
+        }
+      }
+    } catch (err) {
+      process.stderr.write(`[otel-multi] Service ${service} failed: ${err.message}\n`);
+    }
+  }
+
+  const sorted = [...serviceRouteMap.values()].sort((a, b) => b.count - a.count);
+  const patterns = sorted.map((g, index) => {
+    const modeStatus = g.statuses.sort((a, b) => g.statuses.filter(v => v === b).length - g.statuses.filter(v => v === a).length)[0] || 200;
+    const avgLatency = g.latencies.length > 0 ? Math.round(g.latencies.reduce((a, b) => a + b, 0) / g.latencies.length) : null;
+    return {
+      method: g.method, path: g.path,
+      query_params: {},
+      request_body_schema: null,
+      frequency: g.count, frequency_rank: index + 1,
+      baseline_status: modeStatus, baseline_latency_ms: avgLatency,
+      source: 'otel_trace', service: g.service,
+    };
+  });
+
+  return { log_window: '1h', total_requests_analyzed: totalTraces, trace_source: 'jaeger_multi', services: allServices, patterns };
+}
+
 // ─── Main ────────────────────────────────────────────────────
 
 async function main() {
@@ -347,25 +590,50 @@ async function main() {
     }
 
     const logSource = process.env.LOG_SOURCE || 'file';
+    let output;
 
-    if (logSource === 'otel') {
-      // MODE A: OTel/Jaeger
-      const jaegerUrl = sourceArg.startsWith('http') ? sourceArg : (process.env.JAEGER_URL || 'http://localhost:16686');
-      try {
-        const output = await mineFromJaeger(jaegerUrl, probeTargets);
-        console.log(JSON.stringify(output, null, 2));
-      } catch (otelErr) {
-        process.stderr.write(`[otel] Jaeger unreachable (${otelErr.message}), falling back to file mode\n`);
-        // Fall back to file mode if sourceArg is a file path
-        const fallbackPath = process.env.LOG_PATH || sourceArg;
-        const output = await mineFromFile(fallbackPath, probeTargets);
-        console.log(JSON.stringify(output, null, 2));
+    switch (logSource) {
+      case 'otel': {
+        const jaegerUrl = sourceArg.startsWith('http') ? sourceArg : (process.env.JAEGER_URL || 'http://localhost:16686');
+        try {
+          output = await mineFromJaegerMultiService(jaegerUrl, probeTargets);
+        } catch (otelErr) {
+          process.stderr.write(`[otel] Jaeger unreachable (${otelErr.message}), falling back to file\n`);
+          output = await mineFromFile(process.env.LOG_PATH || sourceArg, probeTargets);
+        }
+        break;
       }
-    } else {
-      // MODE B: file (nginx/json logs)
-      const output = await mineFromFile(sourceArg, probeTargets);
-      console.log(JSON.stringify(output, null, 2));
+      case 'datadog': {
+        try {
+          output = await mineFromDatadog(probeTargets);
+        } catch (ddErr) {
+          process.stderr.write(`[datadog] Failed (${ddErr.message}), falling back to file\n`);
+          output = await mineFromFile(process.env.LOG_PATH || sourceArg, probeTargets);
+        }
+        break;
+      }
+      case 'cloudwatch': {
+        try {
+          output = await mineFromCloudWatch(probeTargets);
+        } catch (cwErr) {
+          process.stderr.write(`[cloudwatch] Failed (${cwErr.message}), falling back to file\n`);
+          output = await mineFromFile(process.env.LOG_PATH || sourceArg, probeTargets);
+        }
+        break;
+      }
+      default: {
+        output = await mineFromFile(sourceArg, probeTargets);
+      }
     }
+
+    // Sampling: if too many patterns, keep top 100 by frequency
+    if (output.patterns.length > 100) {
+      process.stderr.write(`[sampling] ${output.patterns.length} patterns found, sampling top 100\n`);
+      output.patterns = output.patterns.slice(0, 100);
+      output.patterns.forEach((p, i) => { p.frequency_rank = i + 1; });
+    }
+
+    console.log(JSON.stringify(output, null, 2));
   } catch (err) {
     console.log(JSON.stringify({
       error: err.message,

@@ -100,9 +100,12 @@ function parseDiff(diffContent) {
   return files;
 }
 
-async function analyzeWithLyzr(rawDiff) {
-  const result = await lyzrChat({
-    message: `Analyze this git diff for a deployment gate.
+function chunkDiffByFile(rawDiff) {
+  const chunks = rawDiff.split(/^diff --git /m).filter(Boolean);
+  return chunks.map(chunk => 'diff --git ' + chunk);
+}
+
+const LYZR_DIFF_PROMPT = `Analyze this git diff for a deployment gate.
 
 Return ONLY this JSON, no markdown:
 {
@@ -116,8 +119,7 @@ Return ONLY this JSON, no markdown:
     }
   ],
   "affected_db_operations": ["SELECT from orders WHERE priority = ?"],
-  "overall_risk": "high",
-  "probe_targets": ["GET /api/orders", "GET /api/orders/:id"]
+  "overall_risk": "high"
 }
 
 Risk levels:
@@ -127,14 +129,62 @@ Risk levels:
 - low: logging, comments, config
 
 Diff:
-${rawDiff.slice(0, 10000)}`,
-  });
+`;
 
-  if (!result?.text) {
-    throw new Error('Lyzr returned empty response for diff analysis');
+async function analyzeWithLyzr(rawDiff) {
+  // For small diffs, send all at once
+  if (rawDiff.length <= 12000) {
+    const result = await lyzrChat({ message: LYZR_DIFF_PROMPT + rawDiff });
+    if (!result?.text) throw new Error('Lyzr returned empty response for diff analysis');
+    return parseLyzrJson(result.text);
   }
 
-  return parseLyzrJson(result.text);
+  // For large diffs, chunk by file and analyze each, then merge
+  process.stderr.write(`[diff-reader] Large diff (${rawDiff.length} chars), chunking by file...\n`);
+  const fileChunks = chunkDiffByFile(rawDiff);
+  const allRoutes = [];
+  const allDbOps = [];
+  const descriptions = [];
+  let worstRisk = 'low';
+  const riskOrder = ['low', 'medium', 'high', 'critical'];
+
+  // Process up to 20 file chunks (skip very large single files)
+  const chunks = fileChunks.slice(0, 20);
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i].slice(0, 12000);
+    process.stderr.write(`[diff-reader] Analyzing file ${i + 1}/${chunks.length}...\n`);
+
+    try {
+      const result = await lyzrChat({ message: LYZR_DIFF_PROMPT + chunk });
+      if (!result?.text) continue;
+      const parsed = parseLyzrJson(result.text);
+
+      if (parsed.affected_routes) allRoutes.push(...parsed.affected_routes);
+      if (parsed.affected_db_operations) allDbOps.push(...parsed.affected_db_operations);
+      if (parsed.change_description) descriptions.push(parsed.change_description);
+      if (parsed.overall_risk && riskOrder.indexOf(parsed.overall_risk) > riskOrder.indexOf(worstRisk)) {
+        worstRisk = parsed.overall_risk;
+      }
+    } catch (err) {
+      process.stderr.write(`[diff-reader] Chunk ${i + 1} failed: ${err.message}\n`);
+    }
+  }
+
+  // Deduplicate routes by method+path
+  const seen = new Set();
+  const uniqueRoutes = allRoutes.filter(r => {
+    const key = `${r.method} ${r.path}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return {
+    change_description: descriptions.join(' ') || `${fileChunks.length} files changed`,
+    affected_routes: uniqueRoutes,
+    affected_db_operations: [...new Set(allDbOps)],
+    overall_risk: worstRisk,
+  };
 }
 
 function computeOverallRisk(files) {

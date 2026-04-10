@@ -1,7 +1,12 @@
 import { readFileSync } from 'fs';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import 'dotenv/config';
 import { lyzrChat, parseLyzrJson } from '../../../lyzr/lyzr-adapter.js';
+
+function stableProbeId(method, path, params) {
+  const key = `${method}:${path}:${JSON.stringify(params || {})}`;
+  return 'probe_' + createHash('sha256').update(key).digest('hex').slice(0, 12);
+}
 
 const RISK_WEIGHTS = { critical: 1.0, high: 0.75, medium: 0.5, low: 0.25 };
 
@@ -50,7 +55,7 @@ function buildProbeFromPattern(p, probeCounter, totalPatterns, riskLevel) {
     : 'real_traffic';
 
   return {
-    id: `probe_${String(probeCounter).padStart(3, '0')}`,
+    id: stableProbeId(p.method, p.path, p.query_params),
     priority: computePriority(p.frequency_rank, totalPatterns, riskLevel),
     method: p.method,
     path: p.path,
@@ -109,7 +114,7 @@ Return ONLY a JSON array of new probes to add:
     const edgeCases = parseLyzrJson(result.text);
     process.stderr.write(`[lyzr] Generated ${edgeCases.length} edge-case probes\n`);
     const newProbes = edgeCases.map((p, i) => ({
-      id: `probe_lyzr_${String(i + 1).padStart(3, '0')}`,
+      id: stableProbeId(p.method || 'GET', p.path || '/unknown', p.query_params),
       priority: 0.92,
       expected_status: 200,
       baseline_latency_ms: null,
@@ -179,9 +184,8 @@ async function main() {
         }
 
         // 1 baseline health check (simplest valid request)
-        probeCounter++;
         probes.push({
-          id: `probe_${String(probeCounter).padStart(3, '0')}`,
+          id: stableProbeId(targetMethod, targetPath, {}),
           priority: computePriority(1, patterns.length, riskLevel),
           method: targetMethod,
           path: targetPath,
@@ -196,9 +200,8 @@ async function main() {
         });
       } else {
         // No real patterns — synthetic probe
-        probeCounter++;
         probes.push({
-          id: `probe_${String(probeCounter).padStart(3, '0')}`,
+          id: stableProbeId(targetMethod, targetPath, {}),
           priority: computePriority(0, 1, riskLevel),
           method: targetMethod,
           path: targetPath,
