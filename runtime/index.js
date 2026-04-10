@@ -337,10 +337,16 @@ ${chalk.bold('What happens:')}
 
     const verdict = await run({ gitDiffPath, logSource, logPath, stagingUrl, githubRepo, prNumber: prNumber ? parseInt(prNumber, 10) : undefined });
 
-    // Auto-save baseline on GO verdict
+    // Auto-save baseline on GO, or on first-ever ESCALATE (bootstrap)
+    const baselineData = JSON.parse(readFileSync(resolve(MEMORY_DIR, 'baseline.json'), 'utf-8'));
+    const isFirstRun = Object.keys(baselineData).length === 0;
+
     if (verdict.verdict === 'GO') {
       autoSaveBaseline();
       console.log(chalk.gray('  Baseline auto-updated for next run'));
+    } else if (isFirstRun && verdict.verdict === 'ESCALATE') {
+      autoSaveBaseline();
+      console.log(chalk.gray('  First run — baseline bootstrapped. Run again for a real comparison.'));
     }
 
     if (verdict.verdict === 'NO-GO') process.exit(1);
