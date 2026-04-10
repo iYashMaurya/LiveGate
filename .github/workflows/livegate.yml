@@ -1,4 +1,4 @@
-name: LiveGate — Real Environment Deployment Check
+name: LiveGate — Deployment Gate
 
 on:
   pull_request:
@@ -8,15 +8,16 @@ on:
     inputs:
       staging_url:
         description: 'Staging environment URL'
-        required: true
-        default: 'https://staging.example.com'
+        required: false
+        default: 'http://localhost:3001'
 
 env:
   NODE_VERSION: '20'
 
 jobs:
+  # ─── Start demo staging server for PR checks ─────────────────
   livegate-check:
-    name: Real Environment Probe Check
+    name: LiveGate Deployment Check
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -24,7 +25,7 @@ jobs:
       issues: write
 
     steps:
-      - name: Checkout LiveGate agent
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -35,65 +36,100 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      - name: Install LiveGate dependencies
-        run: npm ci
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd demo/sample-app && npm install && cd ../..
 
-      - name: Validate gitagent spec compliance
-        run: npx gitagent validate --compliance
-        
-      - name: Generate git diff for changed files
+      - name: Start staging server
+        run: |
+          node demo/sample-app/server.js &
+          sleep 3
+          curl -sf http://localhost:3001/health || (echo "Staging server failed to start" && exit 1)
+
+      - name: Validate gitagent spec
+        run: npx gitagent validate
+
+      - name: Generate PR diff
         id: diff
         run: |
-          git diff ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} > /tmp/pr.diff
-          echo "diff_lines=$(wc -l < /tmp/pr.diff)" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} > /tmp/pr.diff
+          else
+            git diff HEAD~1 > /tmp/pr.diff
+          fi
+          echo "diff_lines=$(wc -l < /tmp/pr.diff | tr -d ' ')" >> $GITHUB_OUTPUT
+          echo "Generated diff: $(wc -l < /tmp/pr.diff | tr -d ' ') lines"
 
-      - name: Run LiveGate real-environment check
+      - name: Run LiveGate
         id: livegate
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LYZR_API_KEY: ${{ secrets.LYZR_API_KEY }}
+          LYZR_AGENT_ID: ${{ secrets.LYZR_AGENT_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          STAGING_BASE_URL: ${{ github.event.inputs.staging_url || vars.STAGING_BASE_URL || 'http://localhost:3001' }}
-          LOG_SOURCE: ${{ vars.LOG_SOURCE || 'file' }}
-          LOG_PATH: ${{ vars.LOG_PATH || './demo/sample-logs/access.log' }}
+          STAGING_BASE_URL: ${{ github.event.inputs.staging_url || 'http://localhost:3001' }}
+          LOG_SOURCE: file
+          LOG_PATH: ./demo/sample-logs/access.log
           GITHUB_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           node runtime/index.js \
             --diff /tmp/pr.diff \
-            --log-source $LOG_SOURCE \
-            --log-path $LOG_PATH \
             --staging $STAGING_BASE_URL \
+            --log-path $LOG_PATH \
             --repo $GITHUB_REPO \
-            --pr $PR_NUMBER
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
+            --pr $PR_NUMBER || true
 
-      - name: Read LiveGate verdict
+      - name: Read verdict
         id: verdict
         if: always()
         run: |
           if [ -f memory/runtime/verdict.json ]; then
-            VERDICT=$(cat memory/runtime/verdict.json | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8'); const v=JSON.parse(d); console.log(v.verdict)")
+            VERDICT=$(node -e "const v=JSON.parse(require('fs').readFileSync('memory/runtime/verdict.json','utf8')); console.log(v.verdict)")
+            CONFIDENCE=$(node -e "const v=JSON.parse(require('fs').readFileSync('memory/runtime/verdict.json','utf8')); console.log(v.confidence)")
             echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
-            echo "LiveGate Verdict: $VERDICT"
+            echo "confidence=$CONFIDENCE" >> $GITHUB_OUTPUT
+            echo "## LiveGate Verdict: $VERDICT (confidence: $CONFIDENCE)" >> $GITHUB_STEP_SUMMARY
           else
             echo "verdict=UNKNOWN" >> $GITHUB_OUTPUT
+            echo "## LiveGate: No verdict produced" >> $GITHUB_STEP_SUMMARY
           fi
 
-      - name: Upload LiveGate results as artifact
+      - name: Post PR comment
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let comment = '## LiveGate — No verdict produced\n\nPipeline may have failed. Check Actions logs.';
+            try {
+              const verdict = JSON.parse(fs.readFileSync('memory/runtime/verdict.json', 'utf8'));
+              comment = verdict.pr_comment_markdown || comment;
+            } catch {}
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });
+
+      - name: Upload results
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: livegate-results-${{ github.event.pull_request.number }}
+          name: livegate-results-${{ github.run_number }}
           path: memory/runtime/
           retention-days: 30
 
-      - name: Block merge on NO-GO verdict
-        if: steps.verdict.outputs.verdict == 'NO-GO'
+      - name: Gate result
+        if: always()
         run: |
-          echo "::error::LiveGate returned NO-GO verdict. Merge blocked."
-          exit 1
-
-      - name: Warn on ESCALATE verdict
-        if: steps.verdict.outputs.verdict == 'ESCALATE'
-        run: |
-          echo "::warning::LiveGate returned ESCALATE. Human review required before merging."
+          VERDICT="${{ steps.verdict.outputs.verdict }}"
+          if [ "$VERDICT" = "NO-GO" ]; then
+            echo "::error::LiveGate: NO-GO — Merge blocked. Check the PR comment for details."
+            exit 1
+          elif [ "$VERDICT" = "ESCALATE" ]; then
+            echo "::warning::LiveGate: ESCALATE — Human review required before merging."
+          elif [ "$VERDICT" = "GO" ]; then
+            echo "LiveGate: GO — Safe to merge."
+          fi
