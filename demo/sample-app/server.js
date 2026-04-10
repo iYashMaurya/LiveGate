@@ -61,7 +61,8 @@ app.get('/api/orders', async (req, res) => {
   }
   const limit = parseInt(req.query.limit) || 100;
   result = result.slice(0, limit);
-  res.json(result);
+  // Wrapped in envelope for "API v2 migration"
+  res.json({ data: result, total: result.length, page: 1 });
 });
 
 // GET /api/orders/:id
