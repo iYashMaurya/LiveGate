@@ -152,7 +152,7 @@ export default async function run({ gitDiffPath, logSource, logPath, stagingUrl,
       ], {
         cwd: ROOT,
         env: verdictEnv,
-        timeout: 30000,
+        timeout: 60000,
         maxBuffer: 10 * 1024 * 1024,
       });
       if (stderr) process.stderr.write(stderr);
@@ -161,8 +161,17 @@ export default async function run({ gitDiffPath, logSource, logPath, stagingUrl,
       // verdict-writer exits non-zero for NO-GO (1) and ESCALATE (2)
       if (verdictErr.stdout) {
         verdictOutput = verdictErr.stdout.trim();
+      }
+      if (verdictErr.stderr) process.stderr.write(verdictErr.stderr);
+    }
+
+    // Read verdict from file if stdout was empty (Lyzr call may have consumed stdout time)
+    if (!verdictOutput) {
+      const verdictPath = resolve(MEMORY_DIR, 'verdict.json');
+      if (existsSync(verdictPath)) {
+        verdictOutput = readFileSync(verdictPath, 'utf-8');
       } else {
-        throw verdictErr;
+        throw new Error('Verdict writer produced no output');
       }
     }
 
