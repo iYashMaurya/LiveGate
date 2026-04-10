@@ -1,0 +1,50 @@
+# LiveGate Configuration
+# Add this file to any Express project to enable deployment gating.
+# See: https://github.com/iYashMaurya/LiveGate
+
+# ── Where is your staging server? ─────────────────────────────
+staging:
+  url: http://localhost:3001
+  # How to start the staging server for CI (optional — if not set, assumes it's already running)
+  start_command: "node server.js"
+  health_endpoint: /health
+  startup_wait_seconds: 3
+
+# ── Where do your traffic logs come from? ─────────────────────
+# Options: file | otel | datadog | cloudwatch
+logs:
+  source: file
+  # For file mode:
+  path: ./access.log
+  # For otel mode:
+  # jaeger_url: http://localhost:16686
+  # For datadog:
+  # dd_api_key: (use env var DD_API_KEY)
+  # dd_app_key: (use env var DD_APP_KEY)
+  # For cloudwatch:
+  # log_group: /aws/ecs/my-service
+  # region: us-east-1
+
+# ── Lyzr Studio (REQUIRED) ───────────────────────────────────
+# Set these as environment variables or GitHub secrets, not here.
+# LYZR_API_KEY=...
+# LYZR_AGENT_ID=...
+
+# ── What to check ────────────────────────────────────────────
+check:
+  # Auto-detect diff from git (recommended)
+  diff: auto
+  # Or specify a fixed diff file:
+  # diff: ./changes.diff
+
+  # Maximum probes to fire per run
+  max_probes: 50
+
+  # Baseline storage
+  baseline_path: .livegate/baseline.json
+
+# ── GitHub PR integration ────────────────────────────────────
+github:
+  post_comment: true
+  block_on_nogo: true
+  warn_on_escalate: true

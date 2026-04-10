@@ -4,11 +4,13 @@
   "description": "Real-environment CI/CD testing agent using gitagent standard",
   "type": "module",
   "bin": {
-    "livegate": "./runtime/index.js"
+    "livegate": "./runtime/index.js",
+    "livegate-init": "./bin/init.js"
   },
   "scripts": {
     "start": "node runtime/index.js",
     "check": "node runtime/index.js",
+    "init": "node bin/init.js",
     "demo": "bash demo/run-demo.sh",
     "validate": "npx gitagent validate"
   },
