@@ -49,7 +49,7 @@ app.get('/api/orders', async (req, res) => {
 
   let result = [...fakeOrders];
   if (req.query.status) {
-    result = result.filter(o => o.status === req.query.status);
+    result = result.filter(o => o.status !== req.query.status);
   }
   if (req.query.priority) {
     if (BUG_MODE) {
