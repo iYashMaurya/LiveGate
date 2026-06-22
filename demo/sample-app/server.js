@@ -92,6 +92,18 @@ app.get('/api/users/:id/orders', (req, res) => {
   res.json(orders);
 });
 
+// GET /api/orders/search?q=keyword
+app.get('/api/orders/search', (req, res) => {
+  const query = req.query.q;
+  if (!query) return res.status(400).json({ error: 'Missing q parameter' });
+
+  // BUG: case-sensitive search — "Pending" won't match "pending"
+  const results = fakeOrders.filter(o =>
+    o.status.includes(query) || o.priority.includes(query)
+  );
+  res.json({ query, results, count: results.length });
+});
+
 // GET /health
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
